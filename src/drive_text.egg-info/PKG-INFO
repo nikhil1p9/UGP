@@ -1,0 +1,11 @@
+Metadata-Version: 2.4
+Name: drive-text
+Version: 0.1.0
+Summary: Driving video to structured JSON extraction
+Requires-Python: >=3.10
+Requires-Dist: numpy>=1.26
+Requires-Dist: opencv-python>=4.9
+Requires-Dist: pydantic>=2.7
+Requires-Dist: ultralytics>=8.2
+Requires-Dist: openai>=1.30
+Requires-Dist: python-dotenv>=1.0

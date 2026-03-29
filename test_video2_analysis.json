@@ -1,0 +1,36 @@
+{
+  "event_type": "collision",
+  "collision_phase": "during",
+  "actors": [
+    "car"
+  ],
+  "actor_count": 2,
+  "actor_details": [
+    {
+      "type": "car",
+      "actions": [
+        "moving"
+      ],
+      "lane_position": "left",
+      "vehicle_speed": "moderate"
+    },
+    {
+      "type": "car",
+      "actions": [
+        "moving",
+        "lane_change"
+      ],
+      "lane_position": "right",
+      "vehicle_speed": "fast"
+    }
+  ],
+  "scene": {
+    "road_type": "intersection",
+    "lighting": "day",
+    "weather": "unknown",
+    "surface": "unknown"
+  },
+  "lane_count": 2,
+  "lane_position": "center",
+  "ego_vehicle_present": false
+}

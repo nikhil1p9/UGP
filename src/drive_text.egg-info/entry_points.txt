@@ -1,0 +1,2 @@
+[console_scripts]
+drive-text = drive_text.cli:main

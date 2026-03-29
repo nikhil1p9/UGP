@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "drive-text"
+version = "0.1.0"
+description = "Driving video to structured JSON extraction"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.26",
+  "opencv-python>=4.9",
+  "pydantic>=2.7",
+  "ultralytics>=8.2",
+  "openai>=1.30",
+  "python-dotenv>=1.0",
+]
+
+[project.scripts]
+drive-text = "drive_text.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
