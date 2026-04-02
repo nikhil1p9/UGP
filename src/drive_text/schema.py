@@ -33,7 +33,19 @@ class SceneInfo(BaseModel):
     surface: Surface = "unknown"
 
 
+# class AnalysisResult(BaseModel):
+#     event_type: EventType
+#     collision_phase: CollisionPhase
+#     actors: list[ActorType]
+#     actor_count: int
+#     actor_details: list[ActorDetail]
+#     scene: SceneInfo
+#     lane_count: int | None
+#     lane_position: LanePosition
+#     ego_vehicle_present: bool
 class AnalysisResult(BaseModel):
+    start_time: float            # <--- NEW FIELD
+    end_time: float              # <--- NEW FIELD
     event_type: EventType
     collision_phase: CollisionPhase
     actors: list[ActorType]

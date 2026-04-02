@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+import json
 import argparse
 import sys
 from pathlib import Path
@@ -34,6 +34,8 @@ def build_parser() -> argparse.ArgumentParser:
             "             (default: <batch-input>/results/)"
         ),
     )
+    parser.add_argument("--interval", type=int, default=5,
+                        help="Output JSON results for every N seconds (default: 5).")
     parser.add_argument("--sample-every",    type=int,   default=3,
                         help="Sample every Nth frame (default: 3).")
     parser.add_argument("--min-confidence",  type=float, default=0.35,
@@ -46,6 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Refine result with OpenAI VLM (requires OPENAI_API_KEY).")
     parser.add_argument("--max-vlm-frames",  type=int,   default=6,
                         help="Max key frames sent to the VLM (default: 6).")
+    
     return parser
 
 
@@ -53,6 +56,7 @@ def _make_config(input_path: Path, output_path: Path, args: argparse.Namespace) 
     return AnalyzerConfig(
         input_path=input_path,
         output_path=output_path,
+        interval_seconds=args.interval,
         sample_every_n_frames=args.sample_every,
         min_detection_confidence=args.min_confidence,
         detector_model=args.detector_model,
@@ -70,8 +74,10 @@ def _run_single(args: argparse.Namespace) -> None:
         else input_path.parent / (input_path.stem + "_analysis.json")
     )
     config = _make_config(input_path, output_path, args)
-    result = VideoAnalyzer(config).analyze()
-    print(result.model_dump_json(indent=2))
+    results = VideoAnalyzer(config).analyze()
+    
+    # We now dump a list of results
+    print(json.dumps([r.model_dump() for r in results], indent=2))
 
 
 def _run_batch(args: argparse.Namespace) -> None:

@@ -1,3 +1,4 @@
+# src/drive_text/config.py
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -8,6 +9,7 @@ from pathlib import Path
 class AnalyzerConfig:
     input_path: Path
     output_path: Path
+    interval_seconds: int = 5      # <--- NEW FIELD
     sample_every_n_frames: int = 3
     min_detection_confidence: float = 0.35
     detector_model: str = "yolov8n.pt"
