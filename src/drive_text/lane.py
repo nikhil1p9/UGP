@@ -45,14 +45,17 @@ class HeuristicLaneEstimator:
         roi = frame[int(height * 0.5) :, :]
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
         blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-        edges = cv2.Canny(blurred, 80, 180)
+        # edges = cv2.Canny(blurred, 80, 180)
+        edges = cv2.Canny(blurred, 50, 150)
         lines = cv2.HoughLinesP(
             edges,
             rho=1,
             theta=np.pi / 180,
-            threshold=60,
+            # threshold=60,
+            threshold=50,
             minLineLength=max(width // 8, 40),
-            maxLineGap=30,
+            # maxLineGap=30,
+            maxLineGap=20,
         )
         if lines is None:
             return LaneEstimate(lane_count=None, visible_lane_markings=0, confidence=0.0)
@@ -77,7 +80,8 @@ class HeuristicLaneEstimator:
 
         bottom_intersections.sort()
         clustered = [bottom_intersections[0]]
-        merge_distance = width * 0.08
+        # merge_distance = width * 0.08
+        merge_distance = width * 0.04
         for value in bottom_intersections[1:]:
             if abs(value - clustered[-1]) > merge_distance:
                 clustered.append(value)

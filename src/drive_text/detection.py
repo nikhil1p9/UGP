@@ -227,6 +227,23 @@ def iou(box_a: tuple[float, float, float, float], box_b: tuple[float, float, flo
     return inter_area / union
 
 
+# def normalized_motion_score(
+#     points: list[tuple[int, float, float]],
+#     bboxes: list[tuple[float, float, float, float]],
+#     frame_width: int,
+#     frame_height: int,
+# ) -> float:
+#     if len(points) < 2:
+#         return 0.0
+#     scores: list[float] = []
+#     diagonal = max((frame_width ** 2 + frame_height ** 2) ** 0.5, 1.0)
+#     for idx in range(1, len(points)):
+#         _, x0, y0 = points[idx - 1]
+#         _, x1, y1 = points[idx]
+#         pixel_distance = float(np.hypot(x1 - x0, y1 - y0))
+#         bbox_height = max((bboxes[idx][3] - bboxes[idx][1] + bboxes[idx - 1][3] - bboxes[idx - 1][1]) / 2.0, 1.0)
+#         scores.append(pixel_distance / max(diagonal * 0.25 + bbox_height, 1.0))
+#     return float(np.mean(scores))
 def normalized_motion_score(
     points: list[tuple[int, float, float]],
     bboxes: list[tuple[float, float, float, float]],
@@ -236,13 +253,20 @@ def normalized_motion_score(
     if len(points) < 2:
         return 0.0
     scores: list[float] = []
-    diagonal = max((frame_width ** 2 + frame_height ** 2) ** 0.5, 1.0)
+    
     for idx in range(1, len(points)):
         _, x0, y0 = points[idx - 1]
         _, x1, y1 = points[idx]
         pixel_distance = float(np.hypot(x1 - x0, y1 - y0))
-        bbox_height = max((bboxes[idx][3] - bboxes[idx][1] + bboxes[idx - 1][3] - bboxes[idx - 1][1]) / 2.0, 1.0)
-        scores.append(pixel_distance / max(diagonal * 0.25 + bbox_height, 1.0))
+        
+        # FIX: Use the Y-coordinate (bottom of the bounding box) for depth perspective
+        # instead of the bounding box height.
+        bottom_y = bboxes[idx][3] 
+        depth_scale = max(bottom_y / frame_height, 0.1) # 0.1 to 1.0 depending on distance
+        
+        # Normalize distance by frame width and depth scale
+        scores.append((pixel_distance / frame_width) / depth_scale)
+        
     return float(np.mean(scores))
 
 
