@@ -103,9 +103,18 @@ class CLRLaneEstimator:
         self.cfg = Config.fromfile(config_path)
         self.conf_threshold = conf_threshold
         
+        # Dynamically check for CUDA availability
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        
         # Build and load the model
         self.net = build_net(self.cfg)
-        self.net = torch.nn.DataParallel(self.net).cuda()
+        
+        # Only use DataParallel if multiple GPUs are available
+        if torch.cuda.device_count() > 1:
+            self.net = torch.nn.DataParallel(self.net)
+            
+        # Move model to the correct device
+        self.net = self.net.to(self.device)
         load_network(self.net, weight_path)
         self.net.eval()
         
@@ -130,16 +139,17 @@ class CLRLaneEstimator:
         img = img.astype(np.float32) / 255.0
         img = (img - self.mean) / self.std
         
-        # Convert to tensor: HWC -> CHW, and add batch dimension
-        img_tensor = torch.from_numpy(img).permute(2, 0, 1).unsqueeze(0).cuda()
+        # Convert to tensor: HWC -> CHW, add batch dimension, and move to device
+        img_tensor = torch.from_numpy(img).permute(2, 0, 1).unsqueeze(0).to(self.device)
 
         # 2. Run Inference
         with torch.no_grad():
             output = self.net(img_tensor)
         
         # 3. Post-process to extract lanes
-        # get_lanes returns a list of lanes for each image in the batch
-        predictions = self.net.module.get_lanes(output)
+        # If wrapped in DataParallel, access module, otherwise access directly
+        net_module = self.net.module if hasattr(self.net, 'module') else self.net
+        predictions = net_module.get_lanes(output)
         
         # Extract the lanes from the first (and only) image in our batch
         valid_lanes = [lane for lane in predictions[0] if lane.metadata['conf'] > self.conf_threshold]
@@ -156,7 +166,6 @@ class CLRLaneEstimator:
             confidence=avg_conf,
             source="clrnet"
         )
-
 
 def build_lane_estimator(backend: str, config_path: str | None = None, weight_path: str | None = None):
     backend = backend.lower()
