@@ -113,26 +113,25 @@ class TrackState:
         return dedupe(actions)
     
     def estimate_ttc(self, fps: float = 30.0) -> float | None:
-        """Estimates Time-To-Collision (TTC) based on bounding box expansion."""
+        """Estimates Time-To-Collision (TTC) based on bounding box area expansion."""
         if len(self.bboxes) < 5:
-            return None # Need history to calculate rate of change
+            return None 
             
-        # Get width of current frame and a frame slightly in the past
-        current_w = self.bboxes[-1][2] - self.bboxes[-1][0]
-        past_w = self.bboxes[-5][2] - self.bboxes[-5][0]
+        # Use Area instead of width for a more stable depth proxy
+        current_area = (self.bboxes[-1][2] - self.bboxes[-1][0]) * (self.bboxes[-1][3] - self.bboxes[-1][1])
+        past_area = (self.bboxes[-5][2] - self.bboxes[-5][0]) * (self.bboxes[-5][3] - self.bboxes[-5][1])
         
-        # Calculate rate of change of width
-        dw = current_w - past_w
+        # Calculate rate of change of area
+        d_area = current_area - past_area
         dt = 5.0 / fps # Time elapsed over 5 frames
         
-        rate_of_change = dw / dt
+        rate_of_change = d_area / dt
         
         if rate_of_change <= 0:
-            return float('inf') # Object is moving away or staying at same distance
+            return float('inf') # Object is maintaining distance or moving away
             
-        ttc = current_w / rate_of_change
+        ttc = current_area / rate_of_change
         return ttc
-
 
 class ObjectDetector:
     def __init__(self, model_name: str, confidence: float) -> None:
@@ -348,7 +347,7 @@ def depth_aware_collision_check(
     dict_a = {pt[0]: bbox for pt, bbox in zip(track_a.points, track_a.bboxes)}
     dict_b = {pt[0]: bbox for pt, bbox in zip(track_b.points, track_b.bboxes)}
     
-    common_frames = set(dict_a.keys()).intersection(set(dict_b.keys()))
+    common_frames = sorted(list(set(dict_a.keys()).intersection(set(dict_b.keys()))))
     if not common_frames:
         return False, False
 
@@ -359,15 +358,32 @@ def depth_aware_collision_check(
     ttc_b = track_b.estimate_ttc(fps) or float('inf')
     min_ttc = min(ttc_a, ttc_b)
 
-    for frame_idx in common_frames:
+    for i, frame_idx in enumerate(common_frames):
         box_a = dict_a[frame_idx]
         box_b = dict_b[frame_idx]
 
         overlap = iou(box_a, box_b)
         
-        # FIX 1: The Hallucination filter was too aggressive. 
-        # Real severe crashes merge into one blob > 80% overlap. Raised to 95%.
+        # --- KINEMATIC JERK DETECTION ---
+        # Detect sudden stoppage when overlapping (a physical impact)
+        jerk_detected = False
+        if i >= 3:
+            prev_idx = common_frames[i-3]
+            dist_now = abs(((box_a[0]+box_a[2])/2) - ((box_b[0]+box_b[2])/2))
+            
+            box_a_prev, box_b_prev = dict_a[prev_idx], dict_b[prev_idx]
+            dist_prev = abs(((box_a_prev[0]+box_a_prev[2])/2) - ((box_b_prev[0]+box_b_prev[2])/2))
+            
+            # If they were closing in fast but suddenly stopped moving relative to each other
+            if (dist_prev - dist_now) > (frame_width * 0.05) and overlap > 0.3:
+                jerk_detected = True
+
+        # --- FIX 1: Smart Hallucination Filter ---
         if overlap > 0.95:
+            # If TTC was critically low right before maximum overlap, or they physically halted, it's a real crash
+            if min_ttc < 1.5 or jerk_detected:
+                is_collision = True
+                break
             continue 
 
         cx_a = (box_a[0] + box_a[2]) / 2.0
@@ -382,17 +398,18 @@ def depth_aware_collision_check(
         max_height = max(height_a, height_b)
         dy_relative = abs(bottom_y_a - bottom_y_b) / max_height
 
-        # FIX 2: Relaxed the spatial constraints.
-        # dx < 0.20 (was 0.10) and dy < 0.30 (was 0.15) to account for camera perspective distortion.
-        if (overlap > config.collision_iou_threshold and 
-            dx_normalized < 0.20 and 
-            dy_relative < 0.30):
-            is_collision = True
-            break 
+        # --- FIX 2: Dynamic Perspective Thresholds ---
+        if overlap > config.collision_iou_threshold:
+            # Strong kinematic evidence of crash overrides strict spatial rules
+            if min_ttc < 1.0 or jerk_detected:
+                is_collision = True
+                break
+            # Relaxed spatial bounds for wide-angle distortion
+            elif dx_normalized < 0.25 and dy_relative < 0.40:
+                is_collision = True
+                break 
             
-        elif (dx_normalized < 0.25 and 
-              dy_relative < 0.40 and 
-              min_ttc < 2.0):
+        elif (dx_normalized < 0.30 and dy_relative < 0.50 and min_ttc < 2.0):
             is_near_miss = True
 
     if is_collision:

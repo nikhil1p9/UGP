@@ -280,35 +280,35 @@ def infer_event(
     collided_pairs: set[tuple[int, int]]
 ) -> tuple[EventType, CollisionPhase]:
     
-    # FIX 3: Ego-Collision Detection (Dashcam hits a car)
-    # Pairwise logic misses this because there's no "track_b" for the camera car!
+    # 1. Ego-Collision Detection: Direct Impact (Dashcam rear-ends a car)
     for track in tracks:
         if not track.bboxes: continue
         box = track.bboxes[-1]
         w = box[2] - box[0]
-        # If a car covers >60% of the screen width and its tires touch the bottom of the frame, 
-        # it means the camera car has physically rammed into it.
+        # If a car covers >60% of the screen width and its tires touch the bottom of the frame
         if w > frame_width * 0.60 and box[3] >= frame_height * 0.85:
             return "collision", "during"
 
-    # FIX 4: Z-Axis (Depth) Movement Score
-    # Purely lateral displacement (x,y) fails on head-on crashes. We now check if the 
-    # bounding box area significantly scaled up/down (indicating depth movement).
-    def get_movement_score(track: TrackState) -> float:
-        if len(track.points) < 2: return 0.0
+    # 2. Ego-Collision Detection: Global Scene Shake (Side/Offset Impact)
+    # If the camera car is hit from the side, bounding boxes won't fill the bottom screen.
+    # Instead, all background cars will exhibit a massive, simultaneous 1-frame pixel jump.
+    if len(tracks) >= 2:
+        shake_scores = []
+        for track in tracks:
+            if len(track.points) >= 3:
+                # Calculate the pixel displacement between the last two frames
+                recent_jump = ((track.points[-1][1] - track.points[-2][1])**2 + 
+                               (track.points[-1][2] - track.points[-2][2])**2) ** 0.5
+                shake_scores.append(recent_jump)
         
-        # 2D screen movement
-        xs = [p[1] for p in track.points]
-        ys = [p[2] for p in track.points]
-        spatial_shift = ((max(xs) - min(xs))**2 + (max(ys) - min(ys))**2)**0.5
-        
-        # Z-axis depth expansion (bounding box area change)
-        areas = [(b[2]-b[0])*(b[3]-b[1]) for b in track.bboxes]
-        scale_shift = (max(areas) - min(areas))**0.5 
-        
-        return spatial_shift + scale_shift
+        if len(shake_scores) >= 2:
+            avg_shake = sum(shake_scores) / len(shake_scores)
+            # If the average frame-to-frame jump of background objects exceeds 15% of the screen,
+            # the camera itself has been violently struck.
+            if avg_shake > frame_height * 0.15: 
+                return "collision", "during"
 
-    # Standard pairwise check
+    # 3. Pairwise Vehicle Collision Detection
     for idx in range(len(tracks)):
         for jdx in range(idx + 1, len(tracks)):
             t_a = tracks[idx]
@@ -330,14 +330,8 @@ def infer_event(
                     else:
                         return "collision", "during"
                 else:
-                    # New collision validation using the Z-axis aware score
-                    # Require at least 20 pixels of visual transformation to count as "moving"
-                    mov_a = get_movement_score(t_a)
-                    mov_b = get_movement_score(t_b)
-                    
-                    if mov_a < 20.0 and mov_b < 20.0:
-                        continue # Both cars are completely parked/static
-                        
+                    # The depth_aware_collision_check now internally handles Kinematic Jerk 
+                    # and TTC constraints, so we no longer need the noisy Z-Axis area check here.
                     collided_pairs.add(pair_id)
                     return "collision", "during"
                     
