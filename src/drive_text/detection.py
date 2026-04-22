@@ -344,52 +344,58 @@ def depth_aware_collision_check(
     if not track_a.bboxes or not track_b.bboxes:
         return False, False
 
-    box_a = track_a.bboxes[-1]
-    box_b = track_b.bboxes[-1]
-
-    # 1. Filter out YOLO "Double-Box" Hallucinations
-    # If the overlap is massive, it is the same physical object detected twice.
-    overlap = iou(box_a, box_b)
-    if overlap > 0.80:
-        return False, False 
-
-    # 2. Extract Tire-Level Geometry and Box Height
-    cx_a = (box_a[0] + box_a[2]) / 2.0
-    bottom_y_a = box_a[3] 
-    height_a = max(box_a[3] - box_a[1], 1.0)
+    # Synchronize frames to compare the exact same moments
+    dict_a = {pt[0]: bbox for pt, bbox in zip(track_a.points, track_a.bboxes)}
+    dict_b = {pt[0]: bbox for pt, bbox in zip(track_b.points, track_b.bboxes)}
     
-    cx_b = (box_b[0] + box_b[2]) / 2.0
-    bottom_y_b = box_b[3]
-    height_b = max(box_b[3] - box_b[1], 1.0)
-    
-    # 3. Dynamic Perspective-Aware Distance Math
-    # Lateral distance (left-to-right)
-    dx_normalized = abs(cx_a - cx_b) / frame_width
-    
-    # Depth distance normalized to the size of the cars! 
-    # (Solves the perspective distortion flaw)
-    max_height = max(height_a, height_b)
-    dy_relative = abs(bottom_y_a - bottom_y_b) / max_height
+    common_frames = set(dict_a.keys()).intersection(set(dict_b.keys()))
+    if not common_frames:
+        return False, False
 
-    # 4. Time-to-Collision check
+    is_collision = False
+    is_near_miss = False
+
     ttc_a = track_a.estimate_ttc(fps) or float('inf')
     ttc_b = track_b.estimate_ttc(fps) or float('inf')
     min_ttc = min(ttc_a, ttc_b)
 
-    # 5. Final Strict Logic Constraints
-    # Collision requires some 2D overlap, matching lanes, and tires touching
-    is_collision = (
-        overlap > config.collision_iou_threshold and 
-        dx_normalized < 0.10 and 
-        dy_relative < 0.15   # Tires must be almost perfectly aligned in depth
-    )
-    
-    # Near miss means they are physically close and closing fast
-    is_near_miss = (
-        not is_collision and 
-        dx_normalized < 0.15 and 
-        dy_relative < 0.35 and 
-        min_ttc < 2.0
-    )
+    for frame_idx in common_frames:
+        box_a = dict_a[frame_idx]
+        box_b = dict_b[frame_idx]
 
-    return is_collision, is_near_miss
+        overlap = iou(box_a, box_b)
+        
+        # FIX 1: The Hallucination filter was too aggressive. 
+        # Real severe crashes merge into one blob > 80% overlap. Raised to 95%.
+        if overlap > 0.95:
+            continue 
+
+        cx_a = (box_a[0] + box_a[2]) / 2.0
+        bottom_y_a = box_a[3] 
+        height_a = max(box_a[3] - box_a[1], 1.0)
+        
+        cx_b = (box_b[0] + box_b[2]) / 2.0
+        bottom_y_b = box_b[3]
+        height_b = max(box_b[3] - box_b[1], 1.0)
+        
+        dx_normalized = abs(cx_a - cx_b) / frame_width
+        max_height = max(height_a, height_b)
+        dy_relative = abs(bottom_y_a - bottom_y_b) / max_height
+
+        # FIX 2: Relaxed the spatial constraints.
+        # dx < 0.20 (was 0.10) and dy < 0.30 (was 0.15) to account for camera perspective distortion.
+        if (overlap > config.collision_iou_threshold and 
+            dx_normalized < 0.20 and 
+            dy_relative < 0.30):
+            is_collision = True
+            break 
+            
+        elif (dx_normalized < 0.25 and 
+              dy_relative < 0.40 and 
+              min_ttc < 2.0):
+            is_near_miss = True
+
+    if is_collision:
+        return True, False
+
+    return False, is_near_miss

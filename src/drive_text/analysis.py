@@ -99,6 +99,8 @@ class VideoAnalyzer:
         num_intervals = int(np.ceil(info.duration_seconds / interval)) if info.duration_seconds > 0 else 0
         
         final_results: list[AnalysisResult] = []
+        
+        collided_pairs: set[tuple[int, int]] = set()
 
         for i in range(num_intervals):
             start_time = i * interval
@@ -132,7 +134,7 @@ class VideoAnalyzer:
             lane_summary = self.lane_estimator.estimate(chunk_images[: min(len(chunk_images), 12)])
             scene = infer_scene(chunk_images, lane_summary.estimated_lane_count)
             # event_type, collision_phase = infer_event(chunk_tracks, info.width, info.height, self.config)
-            event_type, collision_phase = infer_event(chunk_tracks, info.width, info.height, info.fps, self.config)
+            event_type, collision_phase = infer_event(chunk_tracks, info.width, info.height, info.fps, self.config,collided_pairs)
             actor_details = build_actor_details(chunk_tracks, info.width, info.height, lane_summary.estimated_lane_count)
             ego_present = detect_ego_vehicle(chunk_frame_record, info.height)
 
@@ -269,31 +271,75 @@ def infer_scene(frames: list[np.ndarray], lane_count: int | None) -> SceneInfo:
 
 
 
-# analysis.py (around line 211)
-# In src/drive_text/analysis.py
 def infer_event(
     tracks: list[TrackState],
     frame_width: int,
     frame_height: int,
     fps: float,
     config: AnalyzerConfig,
+    collided_pairs: set[tuple[int, int]]
 ) -> tuple[EventType, CollisionPhase]:
     
+    # FIX 3: Ego-Collision Detection (Dashcam hits a car)
+    # Pairwise logic misses this because there's no "track_b" for the camera car!
+    for track in tracks:
+        if not track.bboxes: continue
+        box = track.bboxes[-1]
+        w = box[2] - box[0]
+        # If a car covers >60% of the screen width and its tires touch the bottom of the frame, 
+        # it means the camera car has physically rammed into it.
+        if w > frame_width * 0.60 and box[3] >= frame_height * 0.85:
+            return "collision", "during"
+
+    # FIX 4: Z-Axis (Depth) Movement Score
+    # Purely lateral displacement (x,y) fails on head-on crashes. We now check if the 
+    # bounding box area significantly scaled up/down (indicating depth movement).
+    def get_movement_score(track: TrackState) -> float:
+        if len(track.points) < 2: return 0.0
+        
+        # 2D screen movement
+        xs = [p[1] for p in track.points]
+        ys = [p[2] for p in track.points]
+        spatial_shift = ((max(xs) - min(xs))**2 + (max(ys) - min(ys))**2)**0.5
+        
+        # Z-axis depth expansion (bounding box area change)
+        areas = [(b[2]-b[0])*(b[3]-b[1]) for b in track.bboxes]
+        scale_shift = (max(areas) - min(areas))**0.5 
+        
+        return spatial_shift + scale_shift
+
+    # Standard pairwise check
     for idx in range(len(tracks)):
         for jdx in range(idx + 1, len(tracks)):
+            t_a = tracks[idx]
+            t_b = tracks[jdx]
+            
             is_col, is_near = depth_aware_collision_check(
-                tracks[idx], tracks[jdx], frame_width, frame_height, config, fps
+                t_a, t_b, frame_width, frame_height, config, fps
             )
             
             if is_col:
-                # Check kinematics: Are they still moving or dead stopped?
-                speed_a = tracks[idx].speed_bucket(frame_width, frame_height)
-                speed_b = tracks[jdx].speed_bucket(frame_width, frame_height)
+                pair_id = tuple(sorted([t_a.track_id, t_b.track_id]))
                 
-                if speed_a == "stopped" and speed_b == "stopped":
-                    return "collision", "after"  # The wreck is just sitting there
+                if pair_id in collided_pairs:
+                    # Known collision checking phase
+                    speed_a = t_a.speed_bucket(frame_width, frame_height)
+                    speed_b = t_b.speed_bucket(frame_width, frame_height)
+                    if speed_a == "stopped" and speed_b == "stopped":
+                        return "collision", "after"
+                    else:
+                        return "collision", "during"
                 else:
-                    return "collision", "during" # Active impact
+                    # New collision validation using the Z-axis aware score
+                    # Require at least 20 pixels of visual transformation to count as "moving"
+                    mov_a = get_movement_score(t_a)
+                    mov_b = get_movement_score(t_b)
+                    
+                    if mov_a < 20.0 and mov_b < 20.0:
+                        continue # Both cars are completely parked/static
+                        
+                    collided_pairs.add(pair_id)
+                    return "collision", "during"
                     
             if is_near:
                 return "near_miss", "before"
