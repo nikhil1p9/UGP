@@ -6,6 +6,7 @@ src/drive_text/cli.py
 src/drive_text/config.py
 src/drive_text/detection.py
 src/drive_text/lane.py
+src/drive_text/lane_old.py
 src/drive_text/schema.py
 src/drive_text/video.py
 src/drive_text/vlm.py

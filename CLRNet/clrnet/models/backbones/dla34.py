@@ -415,7 +415,7 @@ def dla34(pretrained=True, levels=None, in_channels=None, **kwargs):  # DLA-34
 class DLAWrapper(nn.Module):
     def __init__(self,
                  dla='dla34',
-                 pretrained=True,
+                 pretrained=False,
                  levels=[1, 1, 1, 2, 2, 1],
                  in_channels=[16, 32, 64, 128, 256, 512],
                  cfg=None):

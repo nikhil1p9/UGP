@@ -95,8 +95,13 @@ class Config:
         check_file_exist(filename)
         if filename.endswith('.py'):
             with tempfile.TemporaryDirectory() as temp_config_dir:
+                # Add delete=False so it doesn't vanish when we close it
                 temp_config_file = tempfile.NamedTemporaryFile(
-                    dir=temp_config_dir, suffix='.py')
+                    dir=temp_config_dir, suffix='.py', delete=False)
+                
+                # Add this line to close the file and release the Windows lock
+                temp_config_file.close() 
+                
                 temp_config_name = osp.basename(temp_config_file.name)
                 shutil.copyfile(filename,
                                 osp.join(temp_config_dir, temp_config_name))

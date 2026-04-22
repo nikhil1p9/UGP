@@ -9,3 +9,6 @@ Requires-Dist: pydantic>=2.7
 Requires-Dist: ultralytics>=8.2
 Requires-Dist: openai>=1.30
 Requires-Dist: python-dotenv>=1.0
+Requires-Dist: addict
+Requires-Dist: torch>=2.0.0
+Requires-Dist: torchvision>=0.15.0
