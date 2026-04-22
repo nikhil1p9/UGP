@@ -8,7 +8,7 @@ import numpy as np
 from ultralytics import YOLO
 
 from .schema import SpeedBucket
-
+from .config import AnalyzerConfig
 
 COCO_CLASS_NAMES = {
     0: "person",
@@ -338,43 +338,58 @@ def depth_aware_collision_check(
     track_b: TrackState, 
     frame_width: int, 
     frame_height: int,
-    fps: float = 30.0
+    config: AnalyzerConfig,
+    fps: float
 ) -> tuple[bool, bool]:
-    """
-    Returns (is_collision, is_near_miss) in O(1) time.
-    """
     if not track_a.bboxes or not track_b.bboxes:
         return False, False
 
     box_a = track_a.bboxes[-1]
     box_b = track_b.bboxes[-1]
 
-    # 1. Tire-level (Bottom-Center) Distance
+    # 1. Filter out YOLO "Double-Box" Hallucinations
+    # If the overlap is massive, it is the same physical object detected twice.
+    overlap = iou(box_a, box_b)
+    if overlap > 0.80:
+        return False, False 
+
+    # 2. Extract Tire-Level Geometry and Box Height
     cx_a = (box_a[0] + box_a[2]) / 2.0
     bottom_y_a = box_a[3] 
+    height_a = max(box_a[3] - box_a[1], 1.0)
     
     cx_b = (box_b[0] + box_b[2]) / 2.0
     bottom_y_b = box_b[3]
+    height_b = max(box_b[3] - box_b[1], 1.0)
     
-    # Normalize by frame dimensions
-    dx = (cx_a - cx_b) / frame_width
-    dy = (bottom_y_a - bottom_y_b) / frame_height
-    pseudo_depth_distance = float(np.hypot(dx, dy))
+    # 3. Dynamic Perspective-Aware Distance Math
+    # Lateral distance (left-to-right)
+    dx_normalized = abs(cx_a - cx_b) / frame_width
+    
+    # Depth distance normalized to the size of the cars! 
+    # (Solves the perspective distortion flaw)
+    max_height = max(height_a, height_b)
+    dy_relative = abs(bottom_y_a - bottom_y_b) / max_height
 
-    # 2. Bounding Box Overlap (IoU)
-    overlap = iou(box_a, box_b)
-
-    # 3. Time-to-Collision (TTC) - Are they rapidly expanding?
-    # (Assuming you implemented the estimate_ttc method on TrackState)
+    # 4. Time-to-Collision check
     ttc_a = track_a.estimate_ttc(fps) or float('inf')
     ttc_b = track_b.estimate_ttc(fps) or float('inf')
     min_ttc = min(ttc_a, ttc_b)
 
-    # Logic: 
-    # A true collision means they overlap laterally AND their tires are at the same depth
-    is_collision = overlap > 0.05 and pseudo_depth_distance < 0.08
+    # 5. Final Strict Logic Constraints
+    # Collision requires some 2D overlap, matching lanes, and tires touching
+    is_collision = (
+        overlap > config.collision_iou_threshold and 
+        dx_normalized < 0.10 and 
+        dy_relative < 0.15   # Tires must be almost perfectly aligned in depth
+    )
     
-    # A near miss means they are physically close, closing fast, but not touching
-    is_near_miss = not is_collision and pseudo_depth_distance < 0.15 and min_ttc < 2.0
+    # Near miss means they are physically close and closing fast
+    is_near_miss = (
+        not is_collision and 
+        dx_normalized < 0.15 and 
+        dy_relative < 0.35 and 
+        min_ttc < 2.0
+    )
 
     return is_collision, is_near_miss

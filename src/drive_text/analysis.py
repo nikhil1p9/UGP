@@ -131,7 +131,8 @@ class VideoAnalyzer:
             # Analyze the slice
             lane_summary = self.lane_estimator.estimate(chunk_images[: min(len(chunk_images), 12)])
             scene = infer_scene(chunk_images, lane_summary.estimated_lane_count)
-            event_type, collision_phase = infer_event(chunk_tracks, info.width, info.height, self.config)
+            # event_type, collision_phase = infer_event(chunk_tracks, info.width, info.height, self.config)
+            event_type, collision_phase = infer_event(chunk_tracks, info.width, info.height, info.fps, self.config)
             actor_details = build_actor_details(chunk_tracks, info.width, info.height, lane_summary.estimated_lane_count)
             ego_present = detect_ego_vehicle(chunk_frame_record, info.height)
 
@@ -268,17 +269,19 @@ def infer_scene(frames: list[np.ndarray], lane_count: int | None) -> SceneInfo:
 
 
 
+# analysis.py (around line 211)
 def infer_event(
     tracks: list[TrackState],
     frame_width: int,
     frame_height: int,
+    fps: float,
     config: AnalyzerConfig,
 ) -> tuple[EventType, CollisionPhase]:
     
     for idx in range(len(tracks)):
         for jdx in range(idx + 1, len(tracks)):
             is_col, is_near = depth_aware_collision_check(
-                tracks[idx], tracks[jdx], frame_width, frame_height
+                tracks[idx], tracks[jdx], frame_width, frame_height, config, fps
             )
             if is_col:
                 return "collision", "during"
@@ -286,4 +289,3 @@ def infer_event(
                 return "near_miss", "before"
 
     return "normal", "unknown"
-
