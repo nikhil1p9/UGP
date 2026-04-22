@@ -111,6 +111,27 @@ class TrackState:
                 actions.append("crossing")
 
         return dedupe(actions)
+    
+    def estimate_ttc(self, fps: float = 30.0) -> float | None:
+        """Estimates Time-To-Collision (TTC) based on bounding box expansion."""
+        if len(self.bboxes) < 5:
+            return None # Need history to calculate rate of change
+            
+        # Get width of current frame and a frame slightly in the past
+        current_w = self.bboxes[-1][2] - self.bboxes[-1][0]
+        past_w = self.bboxes[-5][2] - self.bboxes[-5][0]
+        
+        # Calculate rate of change of width
+        dw = current_w - past_w
+        dt = 5.0 / fps # Time elapsed over 5 frames
+        
+        rate_of_change = dw / dt
+        
+        if rate_of_change <= 0:
+            return float('inf') # Object is moving away or staying at same distance
+            
+        ttc = current_w / rate_of_change
+        return ttc
 
 
 class ObjectDetector:
@@ -311,3 +332,49 @@ def dedupe(items: list[str]) -> list[str]:
             seen.add(item)
             output.append(item)
     return output
+
+def depth_aware_collision_check(
+    track_a: TrackState, 
+    track_b: TrackState, 
+    frame_width: int, 
+    frame_height: int,
+    fps: float = 30.0
+) -> tuple[bool, bool]:
+    """
+    Returns (is_collision, is_near_miss) in O(1) time.
+    """
+    if not track_a.bboxes or not track_b.bboxes:
+        return False, False
+
+    box_a = track_a.bboxes[-1]
+    box_b = track_b.bboxes[-1]
+
+    # 1. Tire-level (Bottom-Center) Distance
+    cx_a = (box_a[0] + box_a[2]) / 2.0
+    bottom_y_a = box_a[3] 
+    
+    cx_b = (box_b[0] + box_b[2]) / 2.0
+    bottom_y_b = box_b[3]
+    
+    # Normalize by frame dimensions
+    dx = (cx_a - cx_b) / frame_width
+    dy = (bottom_y_a - bottom_y_b) / frame_height
+    pseudo_depth_distance = float(np.hypot(dx, dy))
+
+    # 2. Bounding Box Overlap (IoU)
+    overlap = iou(box_a, box_b)
+
+    # 3. Time-to-Collision (TTC) - Are they rapidly expanding?
+    # (Assuming you implemented the estimate_ttc method on TrackState)
+    ttc_a = track_a.estimate_ttc(fps) or float('inf')
+    ttc_b = track_b.estimate_ttc(fps) or float('inf')
+    min_ttc = min(ttc_a, ttc_b)
+
+    # Logic: 
+    # A true collision means they overlap laterally AND their tires are at the same depth
+    is_collision = overlap > 0.05 and pseudo_depth_distance < 0.08
+    
+    # A near miss means they are physically close, closing fast, but not touching
+    is_near_miss = not is_collision and pseudo_depth_distance < 0.15 and min_ttc < 2.0
+
+    return is_collision, is_near_miss

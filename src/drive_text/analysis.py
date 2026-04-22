@@ -5,7 +5,7 @@ import cv2
 import numpy as np
 
 from .config import AnalyzerConfig
-from .detection import Detection, ObjectDetector, SimpleTracker, TrackState, closest_pair_distance, max_overlap_between_tracks
+from .detection import Detection, ObjectDetector, SimpleTracker, TrackState, closest_pair_distance, max_overlap_between_tracks, depth_aware_collision_check
 from .lane import build_lane_estimator
 from .schema import (
     ActorDetail, ActorType, AnalysisResult, CollisionPhase, EventType,
@@ -266,21 +266,24 @@ def infer_scene(frames: list[np.ndarray], lane_count: int | None) -> SceneInfo:
     return SceneInfo(lighting=lighting, road_type=road_type, weather="unknown", surface="unknown")
 
 
+
+
 def infer_event(
     tracks: list[TrackState],
     frame_width: int,
     frame_height: int,
     config: AnalyzerConfig,
 ) -> tuple[EventType, CollisionPhase]:
-    overlap = max_overlap_between_tracks(tracks)
-    closest = closest_pair_distance(tracks, frame_width, frame_height)
-    fast_tracks = [t for t in tracks if t.speed_bucket(frame_width, frame_height) in {"moderate", "fast"}]
-
-    if overlap >= config.collision_iou_threshold and len(tracks) >= 2:
-        return "collision", "during"
-
-    if closest is not None and closest <= config.near_miss_distance_threshold and fast_tracks:
-        return "near_miss", "before"
+    
+    for idx in range(len(tracks)):
+        for jdx in range(idx + 1, len(tracks)):
+            is_col, is_near = depth_aware_collision_check(
+                tracks[idx], tracks[jdx], frame_width, frame_height
+            )
+            if is_col:
+                return "collision", "during"
+            if is_near:
+                return "near_miss", "before"
 
     return "normal", "unknown"
 
