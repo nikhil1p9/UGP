@@ -219,6 +219,12 @@ def build_actor_details(
     details: list[ActorDetail] = []
     for track in tracks:
         if len(track.points) < 2:
+            details.append(ActorDetail(
+                type=actor_type,
+                actions=["moving"], # Default action
+                lane_position=estimate_lane_position(track, frame_width, lane_count),
+                vehicle_speed="moderate", # Default speed
+            ))
             continue
         actor_type = _ACTOR_TYPE_MAP.get(track.class_name, "car")
         raw_actions = track.infer_actions(frame_width, frame_height)

@@ -194,9 +194,10 @@ class ObjectDetector:
 
 
 class SimpleTracker:
-    def __init__(self, iou_threshold: float = 0.2, max_frame_gap: int = 8) -> None:
+    def __init__(self, iou_threshold: float = 0.2, max_frame_gap: int = 8, max_distance: float = 100.0) -> None:
         self.iou_threshold = iou_threshold
         self.max_frame_gap = max_frame_gap
+        self.max_distance = max_distance  # Allow distance-based matching for fast-moving objects
         self._next_track_id = 1
 
     def update_tracks(
@@ -207,27 +208,49 @@ class SimpleTracker:
     ) -> list[TrackState]:
         unmatched = detections.copy()
         for track in tracks:
+            # Skip tracks that haven't been seen recently
             if frame_index - track.last_seen > self.max_frame_gap:
                 continue
 
             best_detection = None
-            best_iou = 0.0
+            best_match_score = 0.0
+            
             for detection in unmatched:
                 if detection.class_name != track.class_name:
                     continue
+                
+                # Standard IoU check
                 overlap = iou(track.bboxes[-1], detection.bbox)
-                if overlap > best_iou:
-                    best_iou = overlap
+                
+                # --- DISTANCE FALLBACK LOGIC ---
+                # If boxes don't overlap at all (IoU = 0) because the vehicle moved too fast 
+                # or frames were skipped, check how far apart their centers are.
+                if overlap == 0:
+                    cx1, cy1 = track.points[-1][1], track.points[-1][2]
+                    cx2, cy2 = detection.center
+                    dist = ((cx1 - cx2)**2 + (cy1 - cy2)**2)**0.5
+                    
+                    if dist < self.max_distance:
+                        # Assign an artificial score just high enough to be accepted
+                        # so the track doesn't break, but a real IoU match will still beat it.
+                        overlap = self.iou_threshold
+                # -------------------------------
+                
+                if overlap > best_match_score:
+                    best_match_score = overlap
                     best_detection = detection
-            if best_detection is not None and best_iou >= self.iou_threshold:
+                    
+            if best_detection is not None and best_match_score >= self.iou_threshold:
                 track.add(frame_index, best_detection)
                 unmatched.remove(best_detection)
 
+        # Create new tracks for any remaining unmatched detections
         for detection in unmatched:
             track = TrackState(track_id=self._next_track_id, class_name=detection.class_name)
             self._next_track_id += 1
             track.add(frame_index, detection)
             tracks.append(track)
+            
         return tracks
 
 
@@ -331,169 +354,6 @@ def dedupe(items: list[str]) -> list[str]:
             seen.add(item)
             output.append(item)
     return output
-
-# def depth_aware_collision_check(
-#     track_a: TrackState, 
-#     track_b: TrackState, 
-#     frame_width: int, 
-#     frame_height: int,
-#     config: AnalyzerConfig,
-#     fps: float
-# ) -> tuple[bool, bool]:
-#     if not track_a.bboxes or not track_b.bboxes:
-#         return False, False
-
-#     # Synchronize frames to compare the exact same moments
-#     dict_a = {pt[0]: bbox for pt, bbox in zip(track_a.points, track_a.bboxes)}
-#     dict_b = {pt[0]: bbox for pt, bbox in zip(track_b.points, track_b.bboxes)}
-    
-#     common_frames = sorted(list(set(dict_a.keys()).intersection(set(dict_b.keys()))))
-#     if not common_frames:
-#         return False, False
-
-#     is_collision = False
-#     is_near_miss = False
-
-#     ttc_a = track_a.estimate_ttc(fps) or float('inf')
-#     ttc_b = track_b.estimate_ttc(fps) or float('inf')
-#     min_ttc = min(ttc_a, ttc_b)
-
-#     for i, frame_idx in enumerate(common_frames):
-#         box_a = dict_a[frame_idx]
-#         box_b = dict_b[frame_idx]
-
-#         overlap = iou(box_a, box_b)
-        
-#         # --- KINEMATIC JERK DETECTION ---
-#         # Detect sudden stoppage when overlapping (a physical impact)
-#         jerk_detected = False
-#         if i >= 3:
-#             prev_idx = common_frames[i-3]
-#             dist_now = abs(((box_a[0]+box_a[2])/2) - ((box_b[0]+box_b[2])/2))
-            
-#             box_a_prev, box_b_prev = dict_a[prev_idx], dict_b[prev_idx]
-#             dist_prev = abs(((box_a_prev[0]+box_a_prev[2])/2) - ((box_b_prev[0]+box_b_prev[2])/2))
-            
-#             # If they were closing in fast but suddenly stopped moving relative to each other
-#             if (dist_prev - dist_now) > (frame_width * 0.05) and overlap > 0.3:
-#                 jerk_detected = True
-
-#         # --- FIX 1: Smart Hallucination Filter ---
-#         if overlap > 0.95:
-#             # If TTC was critically low right before maximum overlap, or they physically halted, it's a real crash
-#             if min_ttc < 1.5 or jerk_detected:
-#                 is_collision = True
-#                 break
-#             continue 
-
-#         cx_a = (box_a[0] + box_a[2]) / 2.0
-#         bottom_y_a = box_a[3] 
-#         height_a = max(box_a[3] - box_a[1], 1.0)
-        
-#         cx_b = (box_b[0] + box_b[2]) / 2.0
-#         bottom_y_b = box_b[3]
-#         height_b = max(box_b[3] - box_b[1], 1.0)
-        
-#         dx_normalized = abs(cx_a - cx_b) / frame_width
-#         max_height = max(height_a, height_b)
-#         dy_relative = abs(bottom_y_a - bottom_y_b) / max_height
-
-#         # --- FIX 2: Dynamic Perspective Thresholds ---
-#         if overlap > config.collision_iou_threshold:
-#             # Strong kinematic evidence of crash overrides strict spatial rules
-#             if min_ttc < 1.0 or jerk_detected:
-#                 is_collision = True
-#                 break
-#             # Relaxed spatial bounds for wide-angle distortion
-#             elif dx_normalized < 0.25 and dy_relative < 0.40:
-#                 is_collision = True
-#                 break 
-            
-#         elif (dx_normalized < 0.30 and dy_relative < 0.50 and min_ttc < 2.0):
-#             is_near_miss = True
-
-#     if is_collision:
-#         return True, False
-
-#     return False, is_near_miss
-# def depth_aware_collision_check(
-#     track_a: TrackState, 
-#     track_b: TrackState, 
-#     frame_width: int, 
-#     frame_height: int,
-#     config: AnalyzerConfig,
-#     fps: float
-# ) -> tuple[bool, bool]:
-#     if not track_a.bboxes or not track_b.bboxes:
-#         return False, False
-
-#     # Synchronize frames to compare the exact same moments
-#     dict_a = {pt[0]: bbox for pt, bbox in zip(track_a.points, track_a.bboxes)}
-#     dict_b = {pt[0]: bbox for pt, bbox in zip(track_b.points, track_b.bboxes)}
-    
-#     common_frames = sorted(list(set(dict_a.keys()).intersection(set(dict_b.keys()))))
-    
-#     # We need at least a few common frames to measure if they are moving towards each other
-#     if len(common_frames) < 3:
-#         return False, False
-
-#     is_collision = False
-#     is_near_miss = False
-
-#     for i, frame_idx in enumerate(common_frames):
-#         box_a = dict_a[frame_idx]
-#         box_b = dict_b[frame_idx]
-
-#         # 1. The Foundation: 2D Box Overlap
-#         overlap = iou(box_a, box_b)
-        
-#         # 2. The Depth Filter: Bottom-Y Alignment
-#         bottom_y_a = box_a[3] 
-#         height_a = max(box_a[3] - box_a[1], 1.0)
-        
-#         bottom_y_b = box_b[3]
-#         height_b = max(box_b[3] - box_b[1], 1.0)
-        
-#         max_height = max(height_a, height_b)
-#         dy_relative = abs(bottom_y_a - bottom_y_b) / max_height
-
-#         # 3. Lateral Convergence: The Closing Gap
-#         is_closing = False
-#         if i >= 2:
-#             prev_idx = common_frames[i-2]
-#             box_a_prev = dict_a[prev_idx]
-#             box_b_prev = dict_b[prev_idx]
-            
-#             cx_a_now = (box_a[0] + box_a[2]) / 2.0
-#             cx_b_now = (box_b[0] + box_b[2]) / 2.0
-#             gap_now = abs(cx_a_now - cx_b_now)
-
-#             cx_a_prev = (box_a_prev[0] + box_a_prev[2]) / 2.0
-#             cx_b_prev = (box_b_prev[0] + box_b_prev[2]) / 2.0
-#             gap_prev = abs(cx_a_prev - cx_b_prev)
-
-#             # Check if the horizontal distance between their centers is shrinking
-#             is_closing = gap_now < gap_prev
-
-#         # --- Base Logic Evaluation ---
-#         if overlap > config.collision_iou_threshold:
-            
-#             # Depth check: Are their bottom edges aligned? (e.g., within 20% of their height)
-#             if dy_relative < 0.20:
-                
-#                 # Convergence check: Are they moving into each other? 
-#                 # (Or if overlap is massive, >60%, they are already physically merged)
-#                 if is_closing or overlap > 0.60: 
-#                     is_collision = True
-#                     break
-            
-#             # If they overlap but depth is a bit further off, log it as a near miss
-#             elif dy_relative < 0.40:
-#                 is_near_miss = True
-
-#     return is_collision, is_near_miss
-
-
 
 
 def depth_aware_collision_check(
