@@ -194,7 +194,7 @@ class ObjectDetector:
 
 
 class SimpleTracker:
-    def __init__(self, iou_threshold: float = 0.2, max_frame_gap: int = 8, max_distance: float = 100.0) -> None:
+    def __init__(self, iou_threshold: float = 0.2, max_frame_gap: int = 8, max_distance: float = 250.0) -> None:
         self.iou_threshold = iou_threshold
         self.max_frame_gap = max_frame_gap
         self.max_distance = max_distance  # Allow distance-based matching for fast-moving objects

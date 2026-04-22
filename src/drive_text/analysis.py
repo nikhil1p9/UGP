@@ -4,6 +4,8 @@ import json
 import cv2
 import numpy as np
 
+from tqdm import tqdm
+
 from .config import AnalyzerConfig
 from .detection import Detection, ObjectDetector, SimpleTracker, TrackState, closest_pair_distance, max_overlap_between_tracks, depth_aware_collision_check
 from .lane import build_lane_estimator
@@ -74,7 +76,7 @@ class VideoAnalyzer:
         frame_record: dict[int, list[Detection]] = {}
         frame_time_map: dict[int, float] = {}
 
-        for frame in sampled_frames:
+        for frame in tqdm(sampled_frames, desc="Detecting & Tracking Objects", unit="frame"):
             frame_time_map[frame.index] = frame.timestamp
             try:
                 detections = self.detector.track(frame.image)
@@ -105,7 +107,7 @@ class VideoAnalyzer:
         
         collided_pairs: set[tuple[int, int]] = set()
 
-        for i in range(num_intervals):
+        for i in tqdm(range(num_intervals), desc="Analyzing Behavior (5s chunks)", unit="chunk"):
             start_time = i * interval
             end_time = min((i + 1) * interval, info.duration_seconds)
             
@@ -218,6 +220,10 @@ def build_actor_details(
 ) -> list[ActorDetail]:
     details: list[ActorDetail] = []
     for track in tracks:
+        # FIX: Define actor_type FIRST
+        actor_type = _ACTOR_TYPE_MAP.get(track.class_name, "car")
+        
+        # Now handle the 1-point tracks safely
         if len(track.points) < 2:
             details.append(ActorDetail(
                 type=actor_type,
@@ -226,17 +232,19 @@ def build_actor_details(
                 vehicle_speed="moderate", # Default speed
             ))
             continue
-        actor_type = _ACTOR_TYPE_MAP.get(track.class_name, "car")
+            
         raw_actions = track.infer_actions(frame_width, frame_height)
         # Filter to only valid ActionType literals
         _valid = {"braking", "turning", "lane_change", "crossing", "overtaking", "stopped", "moving"}
         actions = [a for a in raw_actions if a in _valid]
+        
         details.append(ActorDetail(
             type=actor_type,
             actions=actions,
             lane_position=estimate_lane_position(track, frame_width, lane_count),
             vehicle_speed=track.speed_bucket(frame_width, frame_height),
         ))
+        
     details.sort(key=lambda d: d.type)
     return details
 
