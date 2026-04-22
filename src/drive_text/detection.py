@@ -332,6 +332,170 @@ def dedupe(items: list[str]) -> list[str]:
             output.append(item)
     return output
 
+# def depth_aware_collision_check(
+#     track_a: TrackState, 
+#     track_b: TrackState, 
+#     frame_width: int, 
+#     frame_height: int,
+#     config: AnalyzerConfig,
+#     fps: float
+# ) -> tuple[bool, bool]:
+#     if not track_a.bboxes or not track_b.bboxes:
+#         return False, False
+
+#     # Synchronize frames to compare the exact same moments
+#     dict_a = {pt[0]: bbox for pt, bbox in zip(track_a.points, track_a.bboxes)}
+#     dict_b = {pt[0]: bbox for pt, bbox in zip(track_b.points, track_b.bboxes)}
+    
+#     common_frames = sorted(list(set(dict_a.keys()).intersection(set(dict_b.keys()))))
+#     if not common_frames:
+#         return False, False
+
+#     is_collision = False
+#     is_near_miss = False
+
+#     ttc_a = track_a.estimate_ttc(fps) or float('inf')
+#     ttc_b = track_b.estimate_ttc(fps) or float('inf')
+#     min_ttc = min(ttc_a, ttc_b)
+
+#     for i, frame_idx in enumerate(common_frames):
+#         box_a = dict_a[frame_idx]
+#         box_b = dict_b[frame_idx]
+
+#         overlap = iou(box_a, box_b)
+        
+#         # --- KINEMATIC JERK DETECTION ---
+#         # Detect sudden stoppage when overlapping (a physical impact)
+#         jerk_detected = False
+#         if i >= 3:
+#             prev_idx = common_frames[i-3]
+#             dist_now = abs(((box_a[0]+box_a[2])/2) - ((box_b[0]+box_b[2])/2))
+            
+#             box_a_prev, box_b_prev = dict_a[prev_idx], dict_b[prev_idx]
+#             dist_prev = abs(((box_a_prev[0]+box_a_prev[2])/2) - ((box_b_prev[0]+box_b_prev[2])/2))
+            
+#             # If they were closing in fast but suddenly stopped moving relative to each other
+#             if (dist_prev - dist_now) > (frame_width * 0.05) and overlap > 0.3:
+#                 jerk_detected = True
+
+#         # --- FIX 1: Smart Hallucination Filter ---
+#         if overlap > 0.95:
+#             # If TTC was critically low right before maximum overlap, or they physically halted, it's a real crash
+#             if min_ttc < 1.5 or jerk_detected:
+#                 is_collision = True
+#                 break
+#             continue 
+
+#         cx_a = (box_a[0] + box_a[2]) / 2.0
+#         bottom_y_a = box_a[3] 
+#         height_a = max(box_a[3] - box_a[1], 1.0)
+        
+#         cx_b = (box_b[0] + box_b[2]) / 2.0
+#         bottom_y_b = box_b[3]
+#         height_b = max(box_b[3] - box_b[1], 1.0)
+        
+#         dx_normalized = abs(cx_a - cx_b) / frame_width
+#         max_height = max(height_a, height_b)
+#         dy_relative = abs(bottom_y_a - bottom_y_b) / max_height
+
+#         # --- FIX 2: Dynamic Perspective Thresholds ---
+#         if overlap > config.collision_iou_threshold:
+#             # Strong kinematic evidence of crash overrides strict spatial rules
+#             if min_ttc < 1.0 or jerk_detected:
+#                 is_collision = True
+#                 break
+#             # Relaxed spatial bounds for wide-angle distortion
+#             elif dx_normalized < 0.25 and dy_relative < 0.40:
+#                 is_collision = True
+#                 break 
+            
+#         elif (dx_normalized < 0.30 and dy_relative < 0.50 and min_ttc < 2.0):
+#             is_near_miss = True
+
+#     if is_collision:
+#         return True, False
+
+#     return False, is_near_miss
+# def depth_aware_collision_check(
+#     track_a: TrackState, 
+#     track_b: TrackState, 
+#     frame_width: int, 
+#     frame_height: int,
+#     config: AnalyzerConfig,
+#     fps: float
+# ) -> tuple[bool, bool]:
+#     if not track_a.bboxes or not track_b.bboxes:
+#         return False, False
+
+#     # Synchronize frames to compare the exact same moments
+#     dict_a = {pt[0]: bbox for pt, bbox in zip(track_a.points, track_a.bboxes)}
+#     dict_b = {pt[0]: bbox for pt, bbox in zip(track_b.points, track_b.bboxes)}
+    
+#     common_frames = sorted(list(set(dict_a.keys()).intersection(set(dict_b.keys()))))
+    
+#     # We need at least a few common frames to measure if they are moving towards each other
+#     if len(common_frames) < 3:
+#         return False, False
+
+#     is_collision = False
+#     is_near_miss = False
+
+#     for i, frame_idx in enumerate(common_frames):
+#         box_a = dict_a[frame_idx]
+#         box_b = dict_b[frame_idx]
+
+#         # 1. The Foundation: 2D Box Overlap
+#         overlap = iou(box_a, box_b)
+        
+#         # 2. The Depth Filter: Bottom-Y Alignment
+#         bottom_y_a = box_a[3] 
+#         height_a = max(box_a[3] - box_a[1], 1.0)
+        
+#         bottom_y_b = box_b[3]
+#         height_b = max(box_b[3] - box_b[1], 1.0)
+        
+#         max_height = max(height_a, height_b)
+#         dy_relative = abs(bottom_y_a - bottom_y_b) / max_height
+
+#         # 3. Lateral Convergence: The Closing Gap
+#         is_closing = False
+#         if i >= 2:
+#             prev_idx = common_frames[i-2]
+#             box_a_prev = dict_a[prev_idx]
+#             box_b_prev = dict_b[prev_idx]
+            
+#             cx_a_now = (box_a[0] + box_a[2]) / 2.0
+#             cx_b_now = (box_b[0] + box_b[2]) / 2.0
+#             gap_now = abs(cx_a_now - cx_b_now)
+
+#             cx_a_prev = (box_a_prev[0] + box_a_prev[2]) / 2.0
+#             cx_b_prev = (box_b_prev[0] + box_b_prev[2]) / 2.0
+#             gap_prev = abs(cx_a_prev - cx_b_prev)
+
+#             # Check if the horizontal distance between their centers is shrinking
+#             is_closing = gap_now < gap_prev
+
+#         # --- Base Logic Evaluation ---
+#         if overlap > config.collision_iou_threshold:
+            
+#             # Depth check: Are their bottom edges aligned? (e.g., within 20% of their height)
+#             if dy_relative < 0.20:
+                
+#                 # Convergence check: Are they moving into each other? 
+#                 # (Or if overlap is massive, >60%, they are already physically merged)
+#                 if is_closing or overlap > 0.60: 
+#                     is_collision = True
+#                     break
+            
+#             # If they overlap but depth is a bit further off, log it as a near miss
+#             elif dy_relative < 0.40:
+#                 is_near_miss = True
+
+#     return is_collision, is_near_miss
+
+
+
+
 def depth_aware_collision_check(
     track_a: TrackState, 
     track_b: TrackState, 
@@ -343,76 +507,84 @@ def depth_aware_collision_check(
     if not track_a.bboxes or not track_b.bboxes:
         return False, False
 
-    # Synchronize frames to compare the exact same moments
+    # Synchronize histories to compare the exact same frames
     dict_a = {pt[0]: bbox for pt, bbox in zip(track_a.points, track_a.bboxes)}
     dict_b = {pt[0]: bbox for pt, bbox in zip(track_b.points, track_b.bboxes)}
     
     common_frames = sorted(list(set(dict_a.keys()).intersection(set(dict_b.keys()))))
-    if not common_frames:
+    if len(common_frames) < 3:
         return False, False
 
     is_collision = False
     is_near_miss = False
-
-    ttc_a = track_a.estimate_ttc(fps) or float('inf')
-    ttc_b = track_b.estimate_ttc(fps) or float('inf')
-    min_ttc = min(ttc_a, ttc_b)
+    dt = 2.0 / fps  # Time elapsed over 2 frames
 
     for i, frame_idx in enumerate(common_frames):
         box_a = dict_a[frame_idx]
         box_b = dict_b[frame_idx]
 
+        # --- 1. Base Geometry ---
         overlap = iou(box_a, box_b)
         
-        # --- KINEMATIC JERK DETECTION ---
-        # Detect sudden stoppage when overlapping (a physical impact)
+        # Depth Alignment (Y-Axis)
+        bottom_y_a, bottom_y_b = box_a[3], box_b[3]
+        max_height = max(box_a[3] - box_a[1], box_b[3] - box_b[1], 1.0)
+        dy_relative = abs(bottom_y_a - bottom_y_b) / max_height
+        
+        # Lateral Alignment (X-Axis)
+        cx_a = (box_a[0] + box_a[2]) / 2.0
+        cx_b = (box_b[0] + box_b[2]) / 2.0
+        dx_normalized = abs(cx_a - cx_b) / frame_width
+
+        # --- 2. Kinematics: Distance + Speed (TTC) ---
+        ttc = float('inf')
         jerk_detected = False
-        if i >= 3:
-            prev_idx = common_frames[i-3]
-            dist_now = abs(((box_a[0]+box_a[2])/2) - ((box_b[0]+box_b[2])/2))
-            
+        
+        if i >= 2:
+            prev_idx = common_frames[i-2]
             box_a_prev, box_b_prev = dict_a[prev_idx], dict_b[prev_idx]
-            dist_prev = abs(((box_a_prev[0]+box_a_prev[2])/2) - ((box_b_prev[0]+box_b_prev[2])/2))
             
-            # If they were closing in fast but suddenly stopped moving relative to each other
-            if (dist_prev - dist_now) > (frame_width * 0.05) and overlap > 0.3:
+            # Current distance (gap) between centers
+            cx_a_now = (box_a[0] + box_a[2]) / 2.0
+            cx_b_now = (box_b[0] + box_b[2]) / 2.0
+            gap_now_pixels = abs(cx_a_now - cx_b_now)
+
+            # Previous distance (gap)
+            cx_a_prev = (box_a_prev[0] + box_a_prev[2]) / 2.0
+            cx_b_prev = (box_b_prev[0] + box_b_prev[2]) / 2.0
+            gap_prev_pixels = abs(cx_a_prev - cx_b_prev)
+
+            # Closing Speed (pixels per second)
+            closing_speed = (gap_prev_pixels - gap_now_pixels) / dt
+            
+            # If they are moving toward each other, calculate Time-To-Collision
+            if closing_speed > 0:
+                ttc = gap_now_pixels / closing_speed
+                
+            # Jerk: If they hit and momentum suddenly dies (speed drops to near zero) while overlapping
+            if closing_speed < 0 and overlap > 0.3 and (gap_prev_pixels - gap_now_pixels) > (frame_width * 0.05):
                 jerk_detected = True
 
-        # --- FIX 1: Smart Hallucination Filter ---
-        if overlap > 0.95:
-            # If TTC was critically low right before maximum overlap, or they physically halted, it's a real crash
-            if min_ttc < 1.5 or jerk_detected:
+        # --- 3. The Decision Matrix ---
+        
+        # Massive overlap hallucination filter (one passing behind another)
+        if overlap > 0.90:
+            if jerk_detected or ttc < 0.5: # Only confirm if physics prove it
                 is_collision = True
                 break
             continue 
 
-        cx_a = (box_a[0] + box_a[2]) / 2.0
-        bottom_y_a = box_a[3] 
-        height_a = max(box_a[3] - box_a[1], 1.0)
-        
-        cx_b = (box_b[0] + box_b[2]) / 2.0
-        bottom_y_b = box_b[3]
-        height_b = max(box_b[3] - box_b[1], 1.0)
-        
-        dx_normalized = abs(cx_a - cx_b) / frame_width
-        max_height = max(height_a, height_b)
-        dy_relative = abs(bottom_y_a - bottom_y_b) / max_height
-
-        # --- FIX 2: Dynamic Perspective Thresholds ---
+        # Standard collision evaluation
         if overlap > config.collision_iou_threshold:
-            # Strong kinematic evidence of crash overrides strict spatial rules
-            if min_ttc < 1.0 or jerk_detected:
-                is_collision = True
-                break
-            # Relaxed spatial bounds for wide-angle distortion
-            elif dx_normalized < 0.25 and dy_relative < 0.40:
-                is_collision = True
-                break 
+            # Depth (Y) AND Lateral (X) must match
+            if dy_relative < 0.25 and dx_normalized < 0.30:
+                # Confirm crash if overlapping AND (Critical TTC OR Physical Jerk OR massive overlap)
+                if ttc < 1.0 or jerk_detected or overlap > 0.60:
+                    is_collision = True
+                    break
             
-        elif (dx_normalized < 0.30 and dy_relative < 0.50 and min_ttc < 2.0):
-            is_near_miss = True
+            # Near-miss: They overlap and depth is somewhat close, but no critical impact speed
+            elif dy_relative < 0.45:
+                is_near_miss = True
 
-    if is_collision:
-        return True, False
-
-    return False, is_near_miss
+    return is_collision, is_near_miss

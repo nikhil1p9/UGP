@@ -290,8 +290,6 @@ def infer_event(
             return "collision", "during"
 
     # 2. Ego-Collision Detection: Global Scene Shake (Side/Offset Impact)
-    # If the camera car is hit from the side, bounding boxes won't fill the bottom screen.
-    # Instead, all background cars will exhibit a massive, simultaneous 1-frame pixel jump.
     if len(tracks) >= 2:
         shake_scores = []
         for track in tracks:
@@ -304,36 +302,48 @@ def infer_event(
         if len(shake_scores) >= 2:
             avg_shake = sum(shake_scores) / len(shake_scores)
             # If the average frame-to-frame jump of background objects exceeds 15% of the screen,
-            # the camera itself has been violently struck.
             if avg_shake > frame_height * 0.15: 
                 return "collision", "during"
 
-    # 3. Pairwise Vehicle Collision Detection
+    # 3. Handle Already Collided Pairs First (Fixing the "After" Phase)
     for idx in range(len(tracks)):
         for jdx in range(idx + 1, len(tracks)):
             t_a = tracks[idx]
             t_b = tracks[jdx]
+            pair_id = tuple(sorted([t_a.track_id, t_b.track_id]))
             
+            if pair_id in collided_pairs:
+                # They crashed previously. Check if they are still tangled (during) or separated/stopped (after)
+                is_col, _ = depth_aware_collision_check(t_a, t_b, frame_width, frame_height, config, fps)
+                
+                speed_a = t_a.speed_bucket(frame_width, frame_height)
+                speed_b = t_b.speed_bucket(frame_width, frame_height)
+                
+                # If they are still actively driving into each other
+                if is_col and (speed_a not in ("stopped", "slow") or speed_b not in ("stopped", "slow")):
+                    return "collision", "during"
+                else:
+                    # They separated (is_col is False) OR they ground to a halt
+                    return "collision", "after"
+
+    # 4. Detect New Pairwise Collisions
+    for idx in range(len(tracks)):
+        for jdx in range(idx + 1, len(tracks)):
+            t_a = tracks[idx]
+            t_b = tracks[jdx]
+            pair_id = tuple(sorted([t_a.track_id, t_b.track_id]))
+            
+            # Skip if we already evaluated them in the block above
+            if pair_id in collided_pairs:
+                continue
+                
             is_col, is_near = depth_aware_collision_check(
                 t_a, t_b, frame_width, frame_height, config, fps
             )
             
             if is_col:
-                pair_id = tuple(sorted([t_a.track_id, t_b.track_id]))
-                
-                if pair_id in collided_pairs:
-                    # Known collision checking phase
-                    speed_a = t_a.speed_bucket(frame_width, frame_height)
-                    speed_b = t_b.speed_bucket(frame_width, frame_height)
-                    if speed_a == "stopped" and speed_b == "stopped":
-                        return "collision", "after"
-                    else:
-                        return "collision", "during"
-                else:
-                    # The depth_aware_collision_check now internally handles Kinematic Jerk 
-                    # and TTC constraints, so we no longer need the noisy Z-Axis area check here.
-                    collided_pairs.add(pair_id)
-                    return "collision", "during"
+                collided_pairs.add(pair_id)
+                return "collision", "during"
                     
             if is_near:
                 return "near_miss", "before"
