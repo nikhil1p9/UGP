@@ -13,8 +13,11 @@ class AnalyzerConfig:
     sample_every_n_frames: int = 3
     min_detection_confidence: float = 0.35
     detector_model: str = "yolov8n.pt"
-    lane_backend: str = "heuristic"
+    # lane_backend: str = "heuristic"
     enable_vlm: bool = False
     max_vlm_frames: int = 6
     collision_iou_threshold: float = 0.08
     near_miss_distance_threshold: float = 0.12
+    lane_backend: str = "clrnet"
+    clrnet_config_path: str = "configs/clrnet/clr_dla34_culane.py"
+    clrnet_weight_path: str = "weights/culane_dla34.pth"

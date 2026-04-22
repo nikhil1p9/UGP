@@ -58,7 +58,10 @@ class VideoAnalyzer:
         self.reader = VideoReader(config.input_path)
         self.detector = ObjectDetector(config.detector_model, config.min_detection_confidence)
         self._fallback_tracker = SimpleTracker()
-        self.lane_estimator = build_lane_estimator(config.lane_backend)
+        # self.lane_estimator = build_lane_estimator(config.lane_backend)
+        self.lane_estimator = build_lane_estimator(backend=self.config.lane_backend,
+        config_path=self.config.clrnet_config_path,
+        weight_path=self.config.clrnet_weight_path)
 
     def analyze(self) -> list[AnalysisResult]:
         info = self.reader.info()

@@ -92,29 +92,78 @@ class HeuristicLaneEstimator:
 
 
 class CLRLaneEstimator:
-    """Stub backend that delegates to a CLRNet installation.
+    """Backend that delegates lane detection to the CLRNet architecture."""
+    
+    def __init__(self, config_path: str, weight_path: str, conf_threshold: float = 0.4):
+        import torch
+        from clrnet.utils.config import Config
+        from clrnet.models.registry import build_net
+        from clrnet.utils.net_utils import load_network
 
-    To activate:
-      1. Clone CLRNet: git clone https://github.com/Turoad/CLRNet
-      2. Install it in the same environment (pip install -e .)
-      3. Replace the body of estimate() below with:
-
-         from clrnet.utils.config import Config
-         from clrnet.models.registry import build_net
-         # ... load model, run inference on each frame, count unique lane lines.
-    """
+        self.cfg = Config.fromfile(config_path)
+        self.conf_threshold = conf_threshold
+        
+        # Build and load the model
+        self.net = build_net(self.cfg)
+        self.net = torch.nn.DataParallel(self.net).cuda()
+        load_network(self.net, weight_path)
+        self.net.eval()
+        
+        self.img_w = self.cfg.img_w
+        self.img_h = self.cfg.img_h
+        
+        # ImageNet standardization parameters expected by CLRNet backbones
+        self.mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+        self.std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
     def estimate(self, frames: list[np.ndarray]) -> LaneSummary:
-        raise NotImplementedError(
-            "CLRNet is not installed. Either install CLRNet and implement this method, "
-            "or use --lane-backend heuristic (the default)."
+        import torch
+        
+        if not frames:
+            return LaneSummary()
+
+        # Use the middle frame of the time chunk for a stable estimate
+        target_frame = frames[len(frames) // 2]
+        
+        # 1. Preprocess: Resize, Normalize, Standardize
+        img = cv2.resize(target_frame, (self.img_w, self.img_h))
+        img = img.astype(np.float32) / 255.0
+        img = (img - self.mean) / self.std
+        
+        # Convert to tensor: HWC -> CHW, and add batch dimension
+        img_tensor = torch.from_numpy(img).permute(2, 0, 1).unsqueeze(0).cuda()
+
+        # 2. Run Inference
+        with torch.no_grad():
+            output = self.net(img_tensor)
+        
+        # 3. Post-process to extract lanes
+        # get_lanes returns a list of lanes for each image in the batch
+        predictions = self.net.module.get_lanes(output)
+        
+        # Extract the lanes from the first (and only) image in our batch
+        valid_lanes = [lane for lane in predictions[0] if lane.metadata['conf'] > self.conf_threshold]
+        lane_count = len(valid_lanes)
+
+        # 4. Compile metrics
+        ego_position = "center" if lane_count >= 2 else "unknown"
+        avg_conf = float(np.mean([lane.metadata['conf'] for lane in valid_lanes])) if valid_lanes else 0.0
+
+        return LaneSummary(
+            estimated_lane_count=lane_count,
+            visible_lane_markings=lane_count,
+            ego_lane_position=ego_position,
+            confidence=avg_conf,
+            source="clrnet"
         )
 
 
-def build_lane_estimator(backend: str):
+def build_lane_estimator(backend: str, config_path: str | None = None, weight_path: str | None = None):
     backend = backend.lower()
     if backend == "heuristic":
         return HeuristicLaneEstimator()
     if backend == "clrnet":
-        return CLRLaneEstimator()
+        if not config_path or not weight_path:
+            raise ValueError("The 'clrnet' backend requires both a config_path and a weight_path.")
+        return CLRLaneEstimator(config_path, weight_path)
     raise ValueError(f"Unsupported lane backend: {backend}")
