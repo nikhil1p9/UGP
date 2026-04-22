@@ -270,6 +270,7 @@ def infer_scene(frames: list[np.ndarray], lane_count: int | None) -> SceneInfo:
 
 
 # analysis.py (around line 211)
+# In src/drive_text/analysis.py
 def infer_event(
     tracks: list[TrackState],
     frame_width: int,
@@ -283,8 +284,17 @@ def infer_event(
             is_col, is_near = depth_aware_collision_check(
                 tracks[idx], tracks[jdx], frame_width, frame_height, config, fps
             )
+            
             if is_col:
-                return "collision", "during"
+                # Check kinematics: Are they still moving or dead stopped?
+                speed_a = tracks[idx].speed_bucket(frame_width, frame_height)
+                speed_b = tracks[jdx].speed_bucket(frame_width, frame_height)
+                
+                if speed_a == "stopped" and speed_b == "stopped":
+                    return "collision", "after"  # The wreck is just sitting there
+                else:
+                    return "collision", "during" # Active impact
+                    
             if is_near:
                 return "near_miss", "before"
 
