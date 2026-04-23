@@ -15,7 +15,7 @@ from .schema import (
 )
 from .video import VideoFrame, VideoReader
 from .vlm import VLMRefiner
-
+from .collision import infer_event
 
 # â”€â”€â”€ YOLO class name â†’ user-facing ActorType â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 _ACTOR_TYPE_MAP: dict[str, ActorType] = {
@@ -322,98 +322,98 @@ def infer_scene(frames: list[np.ndarray], lane_count: int | None) -> SceneInfo:
 
 
 
-def infer_event(
-    tracks: list[TrackState],
-    frame_width: int,
-    frame_height: int,
-    fps: float,
-    config: AnalyzerConfig,
-    collided_pairs: set[tuple[int, int]]
-) -> tuple[EventType, CollisionPhase]:
+# def infer_event(
+#     tracks: list[TrackState],
+#     frame_width: int,
+#     frame_height: int,
+#     fps: float,
+#     config: AnalyzerConfig,
+#     collided_pairs: set[tuple[int, int]]
+# ) -> tuple[EventType, CollisionPhase]:
     
-    # 1. Ego-Collision Detection: Direct & Offset Impact
-    for track in tracks:
-        if not track.bboxes or len(track.bboxes) < 3: 
-            continue
+#     # 1. Ego-Collision Detection: Direct & Offset Impact
+#     for track in tracks:
+#         if not track.bboxes or len(track.bboxes) < 3: 
+#             continue
             
-        box = track.bboxes[-1]
-        w = box[2] - box[0]
+#         box = track.bboxes[-1]
+#         w = box[2] - box[0]
         
-        # Lowered width threshold to 40% to catch offset crashes (hitting the corner of a car)
-        # Object must touch the very bottom of the screen (>85%)
-        if w > frame_width * 0.40 and box[3] >= frame_height * 0.85:
+#         # Lowered width threshold to 40% to catch offset crashes (hitting the corner of a car)
+#         # Object must touch the very bottom of the screen (>85%)
+#         if w > frame_width * 0.40 and box[3] >= frame_height * 0.85:
             
-            widths = [b[2] - b[0] for b in track.bboxes[-3:]]
-            growth = widths[-1] - widths[0]
+#             widths = [b[2] - b[0] for b in track.bboxes[-3:]]
+#             growth = widths[-1] - widths[0]
             
-            # If the object is massively expanding in the last 3 frames (>3% of screen width), 
-            # and is practically on top of the dashcam, it is an active impact.
-            if growth > (frame_width * 0.03): 
-                return "collision", "during"
+#             # If the object is massively expanding in the last 3 frames (>3% of screen width), 
+#             # and is practically on top of the dashcam, it is an active impact.
+#             if growth > (frame_width * 0.03): 
+#                 return "collision", "during"
             
-            # If the object was expanding rapidly, and the tracking SUDDENLY died while it was huge
-            if len(track.points) >= 4:
-                older_growth = track.bboxes[-2][2] - track.bboxes[-2][0] - (track.bboxes[-4][2] - track.bboxes[-4][0])
-                if older_growth > (frame_width * 0.03) and growth <= 0:
-                    return "collision", "during"
+#             # If the object was expanding rapidly, and the tracking SUDDENLY died while it was huge
+#             if len(track.points) >= 4:
+#                 older_growth = track.bboxes[-2][2] - track.bboxes[-2][0] - (track.bboxes[-4][2] - track.bboxes[-4][0])
+#                 if older_growth > (frame_width * 0.03) and growth <= 0:
+#                     return "collision", "during"
 
-    # 2. Ego-Collision Detection: Global Scene Shake
-    # Filter for objects that are NOT in the far top 30%
-    nearby_tracks = [t for t in tracks if t.bboxes and t.bboxes[-1][3] > frame_height * 0.30]
+#     # 2. Ego-Collision Detection: Global Scene Shake
+#     # Filter for objects that are NOT in the far top 30%
+#     nearby_tracks = [t for t in tracks if t.bboxes and t.bboxes[-1][3] > frame_height * 0.30]
     
-    if len(nearby_tracks) >= 2:
-        shake_count = 0
-        for track in nearby_tracks:
-            if len(track.points) >= 2:
-                # Calculate pixel jump between the very last two frames
-                recent_jump = ((track.points[-1][1] - track.points[-2][1])**2 + 
-                               (track.points[-1][2] - track.points[-2][2])**2) ** 0.5
+#     if len(nearby_tracks) >= 2:
+#         shake_count = 0
+#         for track in nearby_tracks:
+#             if len(track.points) >= 2:
+#                 # Calculate pixel jump between the very last two frames
+#                 recent_jump = ((track.points[-1][1] - track.points[-2][1])**2 + 
+#                                (track.points[-1][2] - track.points[-2][2])**2) ** 0.5
                 
-                # A 12% screen height jump in a single frame is physically impossible 
-                # for a car without camera impact/jolt.
-                if recent_jump > frame_height * 0.12: 
-                    shake_count += 1
+#                 # A 12% screen height jump in a single frame is physically impossible 
+#                 # for a car without camera impact/jolt.
+#                 if recent_jump > frame_height * 0.12: 
+#                     shake_count += 1
         
-        # If multiple nearby objects violently jumped simultaneously
-        if shake_count >= 2 and shake_count >= len(nearby_tracks) * 0.30:
-            return "collision", "during"
+#         # If multiple nearby objects violently jumped simultaneously
+#         if shake_count >= 2 and shake_count >= len(nearby_tracks) * 0.30:
+#             return "collision", "during"
 
-    # 3. Handle Already Collided Pairs First
-    for idx in range(len(tracks)):
-        for jdx in range(idx + 1, len(tracks)):
-            t_a = tracks[idx]
-            t_b = tracks[jdx]
-            pair_id = tuple(sorted([t_a.track_id, t_b.track_id]))
+#     # 3. Handle Already Collided Pairs First
+#     for idx in range(len(tracks)):
+#         for jdx in range(idx + 1, len(tracks)):
+#             t_a = tracks[idx]
+#             t_b = tracks[jdx]
+#             pair_id = tuple(sorted([t_a.track_id, t_b.track_id]))
             
-            if pair_id in collided_pairs:
-                is_col, _ = depth_aware_collision_check(t_a, t_b, frame_width, frame_height, config, fps)
-                speed_a = t_a.speed_bucket(frame_width, frame_height)
-                speed_b = t_b.speed_bucket(frame_width, frame_height)
+#             if pair_id in collided_pairs:
+#                 is_col, _ = depth_aware_collision_check(t_a, t_b, frame_width, frame_height, config, fps)
+#                 speed_a = t_a.speed_bucket(frame_width, frame_height)
+#                 speed_b = t_b.speed_bucket(frame_width, frame_height)
                 
-                if is_col and (speed_a not in ("stopped", "slow") or speed_b not in ("stopped", "slow")):
-                    return "collision", "during"
-                else:
-                    return "collision", "after"
+#                 if is_col and (speed_a not in ("stopped", "slow") or speed_b not in ("stopped", "slow")):
+#                     return "collision", "during"
+#                 else:
+#                     return "collision", "after"
 
-    # 4. Detect New Pairwise Collisions
-    for idx in range(len(tracks)):
-        for jdx in range(idx + 1, len(tracks)):
-            t_a = tracks[idx]
-            t_b = tracks[jdx]
-            pair_id = tuple(sorted([t_a.track_id, t_b.track_id]))
+#     # 4. Detect New Pairwise Collisions
+#     for idx in range(len(tracks)):
+#         for jdx in range(idx + 1, len(tracks)):
+#             t_a = tracks[idx]
+#             t_b = tracks[jdx]
+#             pair_id = tuple(sorted([t_a.track_id, t_b.track_id]))
             
-            if pair_id in collided_pairs:
-                continue
+#             if pair_id in collided_pairs:
+#                 continue
                 
-            is_col, is_near = depth_aware_collision_check(
-                t_a, t_b, frame_width, frame_height, config, fps
-            )
+#             is_col, is_near = depth_aware_collision_check(
+#                 t_a, t_b, frame_width, frame_height, config, fps
+#             )
             
-            if is_col:
-                collided_pairs.add(pair_id)
-                return "collision", "during"
+#             if is_col:
+#                 collided_pairs.add(pair_id)
+#                 return "collision", "during"
                     
-            if is_near:
-                return "near_miss", "before"
+#             if is_near:
+#                 return "near_miss", "before"
 
-    return "normal", "unknown"
+#     return "normal", "unknown"
