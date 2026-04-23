@@ -61,6 +61,8 @@ class VideoAnalyzer:
         self.detector = ObjectDetector(config.detector_model, config.min_detection_confidence)
         self._fallback_tracker = SimpleTracker()
         # self.lane_estimator = build_lane_estimator(config.lane_backend)
+        gap = max(self.config.sample_every_n_frames * 2, 30)
+        self._fallback_tracker = SimpleTracker(max_frame_gap=gap)
         self.lane_estimator = build_lane_estimator(backend=self.config.lane_backend,
         config_path=self.config.clrnet_config_path,
         weight_path=self.config.clrnet_weight_path)
@@ -78,12 +80,14 @@ class VideoAnalyzer:
 
         for frame in tqdm(sampled_frames, desc="Detecting & Tracking Objects", unit="frame"):
             frame_time_map[frame.index] = frame.timestamp
-            try:
-                detections = self.detector.track(frame.image)
-            except Exception as exc:
-                warnings.append(f"ByteTrack unavailable on frame {frame.index} ({exc}); using IoU fallback.")
+            if self.config.sample_every_n_frames > 1:
                 detections = self.detector.detect(frame.image)
-
+            else:
+                try:
+                    detections = self.detector.track(frame.image)
+                except Exception as exc:
+                    warnings.append(f"ByteTrack unavailable on frame {frame.index} ({exc}); using IoU fallback.")
+                    detections = self.detector.detect(frame.image)
             frame_record[frame.index] = detections
 
             tracked   = [d for d in detections if d.track_id is not None]
@@ -212,6 +216,41 @@ def _map_lane_position(raw: str) -> LanePosition:
     return mapping.get(raw, "unknown")
 
 
+# def build_actor_details(
+#     tracks: list[TrackState],
+#     frame_width: int,
+#     frame_height: int,
+#     lane_count: int | None,
+# ) -> list[ActorDetail]:
+#     details: list[ActorDetail] = []
+#     for track in tracks:
+#         # FIX: Define actor_type FIRST
+#         actor_type = _ACTOR_TYPE_MAP.get(track.class_name, "car")
+        
+#         # Now handle the 1-point tracks safely
+#         if len(track.points) < 2:
+#             details.append(ActorDetail(
+#                 type=actor_type,
+#                 actions=["moving"], # Default action
+#                 lane_position=estimate_lane_position(track, frame_width, lane_count),
+#                 vehicle_speed="moderate", # Default speed
+#             ))
+#             continue
+            
+#         raw_actions = track.infer_actions(frame_width, frame_height)
+#         # Filter to only valid ActionType literals
+#         _valid = {"braking", "turning", "lane_change", "crossing", "overtaking", "stopped", "moving"}
+#         actions = [a for a in raw_actions if a in _valid]
+        
+#         details.append(ActorDetail(
+#             type=actor_type,
+#             actions=actions,
+#             lane_position=estimate_lane_position(track, frame_width, lane_count),
+#             vehicle_speed=track.speed_bucket(frame_width, frame_height),
+#         ))
+        
+#     details.sort(key=lambda d: d.type)
+#     return details
 def build_actor_details(
     tracks: list[TrackState],
     frame_width: int,
@@ -220,17 +259,12 @@ def build_actor_details(
 ) -> list[ActorDetail]:
     details: list[ActorDetail] = []
     for track in tracks:
-        # FIX: Define actor_type FIRST
+        # FIX 1: Define actor_type at the start so it's available for the whole loop
         actor_type = _ACTOR_TYPE_MAP.get(track.class_name, "car")
-        
-        # Now handle the 1-point tracks safely
+
+        # FIX 2: Restore the noise filter. 
+        # Skip objects seen for only 1 frame to prevent overcounting hallucinations.
         if len(track.points) < 2:
-            details.append(ActorDetail(
-                type=actor_type,
-                actions=["moving"], # Default action
-                lane_position=estimate_lane_position(track, frame_width, lane_count),
-                vehicle_speed="moderate", # Default speed
-            ))
             continue
             
         raw_actions = track.infer_actions(frame_width, frame_height)
@@ -297,32 +331,54 @@ def infer_event(
     collided_pairs: set[tuple[int, int]]
 ) -> tuple[EventType, CollisionPhase]:
     
-    # 1. Ego-Collision Detection: Direct Impact (Dashcam rear-ends a car)
+    # 1. Ego-Collision Detection: Direct & Offset Impact
     for track in tracks:
-        if not track.bboxes: continue
+        if not track.bboxes or len(track.bboxes) < 3: 
+            continue
+            
         box = track.bboxes[-1]
         w = box[2] - box[0]
-        # If a car covers >60% of the screen width and its tires touch the bottom of the frame
-        if w > frame_width * 0.60 and box[3] >= frame_height * 0.85:
-            return "collision", "during"
+        
+        # Lowered width threshold to 40% to catch offset crashes (hitting the corner of a car)
+        # Object must touch the very bottom of the screen (>85%)
+        if w > frame_width * 0.40 and box[3] >= frame_height * 0.85:
+            
+            widths = [b[2] - b[0] for b in track.bboxes[-3:]]
+            growth = widths[-1] - widths[0]
+            
+            # If the object is massively expanding in the last 3 frames (>3% of screen width), 
+            # and is practically on top of the dashcam, it is an active impact.
+            if growth > (frame_width * 0.03): 
+                return "collision", "during"
+            
+            # If the object was expanding rapidly, and the tracking SUDDENLY died while it was huge
+            if len(track.points) >= 4:
+                older_growth = track.bboxes[-2][2] - track.bboxes[-2][0] - (track.bboxes[-4][2] - track.bboxes[-4][0])
+                if older_growth > (frame_width * 0.03) and growth <= 0:
+                    return "collision", "during"
 
-    # 2. Ego-Collision Detection: Global Scene Shake (Side/Offset Impact)
-    if len(tracks) >= 2:
-        shake_scores = []
-        for track in tracks:
-            if len(track.points) >= 3:
-                # Calculate the pixel displacement between the last two frames
+    # 2. Ego-Collision Detection: Global Scene Shake
+    # Filter for objects that are NOT in the far top 30%
+    nearby_tracks = [t for t in tracks if t.bboxes and t.bboxes[-1][3] > frame_height * 0.30]
+    
+    if len(nearby_tracks) >= 2:
+        shake_count = 0
+        for track in nearby_tracks:
+            if len(track.points) >= 2:
+                # Calculate pixel jump between the very last two frames
                 recent_jump = ((track.points[-1][1] - track.points[-2][1])**2 + 
                                (track.points[-1][2] - track.points[-2][2])**2) ** 0.5
-                shake_scores.append(recent_jump)
+                
+                # A 12% screen height jump in a single frame is physically impossible 
+                # for a car without camera impact/jolt.
+                if recent_jump > frame_height * 0.12: 
+                    shake_count += 1
         
-        if len(shake_scores) >= 2:
-            avg_shake = sum(shake_scores) / len(shake_scores)
-            # If the average frame-to-frame jump of background objects exceeds 15% of the screen,
-            if avg_shake > frame_height * 0.15: 
-                return "collision", "during"
+        # If multiple nearby objects violently jumped simultaneously
+        if shake_count >= 2 and shake_count >= len(nearby_tracks) * 0.30:
+            return "collision", "during"
 
-    # 3. Handle Already Collided Pairs First (Fixing the "After" Phase)
+    # 3. Handle Already Collided Pairs First
     for idx in range(len(tracks)):
         for jdx in range(idx + 1, len(tracks)):
             t_a = tracks[idx]
@@ -330,17 +386,13 @@ def infer_event(
             pair_id = tuple(sorted([t_a.track_id, t_b.track_id]))
             
             if pair_id in collided_pairs:
-                # They crashed previously. Check if they are still tangled (during) or separated/stopped (after)
                 is_col, _ = depth_aware_collision_check(t_a, t_b, frame_width, frame_height, config, fps)
-                
                 speed_a = t_a.speed_bucket(frame_width, frame_height)
                 speed_b = t_b.speed_bucket(frame_width, frame_height)
                 
-                # If they are still actively driving into each other
                 if is_col and (speed_a not in ("stopped", "slow") or speed_b not in ("stopped", "slow")):
                     return "collision", "during"
                 else:
-                    # They separated (is_col is False) OR they ground to a halt
                     return "collision", "after"
 
     # 4. Detect New Pairwise Collisions
@@ -350,7 +402,6 @@ def infer_event(
             t_b = tracks[jdx]
             pair_id = tuple(sorted([t_a.track_id, t_b.track_id]))
             
-            # Skip if we already evaluated them in the block above
             if pair_id in collided_pairs:
                 continue
                 

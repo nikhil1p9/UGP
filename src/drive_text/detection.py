@@ -9,6 +9,7 @@ from ultralytics import YOLO
 
 from .schema import SpeedBucket
 from .config import AnalyzerConfig
+import math
 
 COCO_CLASS_NAMES = {
     0: "person",
@@ -190,6 +191,8 @@ class ObjectDetector:
                         track_id=track_id,
                     )
                 )
+        if not detections:
+            return self.detect(frame)
         return detections
 
 
@@ -367,84 +370,76 @@ def depth_aware_collision_check(
     if not track_a.bboxes or not track_b.bboxes:
         return False, False
 
-    # Synchronize histories to compare the exact same frames
     dict_a = {pt[0]: bbox for pt, bbox in zip(track_a.points, track_a.bboxes)}
     dict_b = {pt[0]: bbox for pt, bbox in zip(track_b.points, track_b.bboxes)}
     
     common_frames = sorted(list(set(dict_a.keys()).intersection(set(dict_b.keys()))))
+    
+    # Lowered requirement to 3 frames. Real crashes happen fast.
     if len(common_frames) < 3:
+        return False, False
+
+    # Horizon Filter: Ignore distant background traffic (Top 30% of screen)
+    max_y_a = max(bbox[3] for bbox in dict_a.values())
+    max_y_b = max(bbox[3] for bbox in dict_b.values())
+    if max_y_a < frame_height * 0.40 and max_y_b < frame_height * 0.40:
         return False, False
 
     is_collision = False
     is_near_miss = False
-    dt = 2.0 / fps  # Time elapsed over 2 frames
+
+    overlap_history = []
+    distance_history = []
 
     for i, frame_idx in enumerate(common_frames):
         box_a = dict_a[frame_idx]
         box_b = dict_b[frame_idx]
 
-        # --- 1. Base Geometry ---
         overlap = iou(box_a, box_b)
-        
-        # Depth Alignment (Y-Axis)
-        bottom_y_a, bottom_y_b = box_a[3], box_b[3]
-        max_height = max(box_a[3] - box_a[1], box_b[3] - box_b[1], 1.0)
-        dy_relative = abs(bottom_y_a - bottom_y_b) / max_height
-        
-        # Lateral Alignment (X-Axis)
+        overlap_history.append(overlap)
+
         cx_a = (box_a[0] + box_a[2]) / 2.0
         cx_b = (box_b[0] + box_b[2]) / 2.0
-        dx_normalized = abs(cx_a - cx_b) / frame_width
-
-        # --- 2. Kinematics: Distance + Speed (TTC) ---
-        ttc = float('inf')
-        jerk_detected = False
+        by_a = box_a[3]
+        by_b = box_b[3]
         
-        if i >= 2:
-            prev_idx = common_frames[i-2]
-            box_a_prev, box_b_prev = dict_a[prev_idx], dict_b[prev_idx]
-            
-            # Current distance (gap) between centers
-            cx_a_now = (box_a[0] + box_a[2]) / 2.0
-            cx_b_now = (box_b[0] + box_b[2]) / 2.0
-            gap_now_pixels = abs(cx_a_now - cx_b_now)
+        dist = ((cx_a - cx_b)**2 + (by_a - by_b)**2)**0.5
+        distance_history.append(dist)
 
-            # Previous distance (gap)
-            cx_a_prev = (box_a_prev[0] + box_a_prev[2]) / 2.0
-            cx_b_prev = (box_b_prev[0] + box_b_prev[2]) / 2.0
-            gap_prev_pixels = abs(cx_a_prev - cx_b_prev)
-
-            # Closing Speed (pixels per second)
-            closing_speed = (gap_prev_pixels - gap_now_pixels) / dt
-            
-            # If they are moving toward each other, calculate Time-To-Collision
-            if closing_speed > 0:
-                ttc = gap_now_pixels / closing_speed
-                
-            # Jerk: If they hit and momentum suddenly dies (speed drops to near zero) while overlapping
-            if closing_speed < 0 and overlap > 0.3 and (gap_prev_pixels - gap_now_pixels) > (frame_width * 0.05):
-                jerk_detected = True
-
-        # --- 3. The Decision Matrix ---
-        
-        # Massive overlap hallucination filter (one passing behind another)
-        if overlap > 0.90:
-            if jerk_detected or ttc < 0.5: # Only confirm if physics prove it
-                is_collision = True
-                break
-            continue 
-
-        # Standard collision evaluation
-        if overlap > config.collision_iou_threshold:
-            # Depth (Y) AND Lateral (X) must match
-            if dy_relative < 0.25 and dx_normalized < 0.30:
-                # Confirm crash if overlapping AND (Critical TTC OR Physical Jerk OR massive overlap)
-                if ttc < 1.0 or jerk_detected or overlap > 0.60:
-                    is_collision = True
-                    break
-            
-            # Near-miss: They overlap and depth is somewhat close, but no critical impact speed
-            elif dy_relative < 0.45:
+        # Mark near misses based on proximity and light overlap
+        if overlap > 0.20: 
+            if max(by_a, by_b) > frame_height * 0.40:
                 is_near_miss = True
+
+    max_overlap = max(overlap_history) if overlap_history else 0.0
+    
+    if max_overlap > config.collision_iou_threshold:
+        peak_idx = overlap_history.index(max_overlap)
+        
+        # 1. High-Speed Impact & Tracking Death
+        # If they hit hard and the track immediately ends (because cars deformed/merged)
+        if peak_idx >= 1:
+            pre_dist_change = distance_history[peak_idx - 1] - distance_history[peak_idx]
+            
+            # If they closed distance rapidly (>2% of screen width per frame) and overlapped heavily
+            if pre_dist_change > (frame_width * 0.02) and max_overlap > 0.30:
+                # If the common tracking ends right at or immediately after the peak overlap
+                if peak_idx == len(common_frames) - 1 or peak_idx == len(common_frames) - 2:
+                    is_collision = True
+                    return is_collision, is_near_miss
+                    
+                # Or if they survive the impact but their relative speed drops to near zero (Tangled)
+                if len(distance_history) > peak_idx + 1:
+                    post_dist_change = distance_history[peak_idx] - distance_history[-1]
+                    if abs(post_dist_change) < (frame_width * 0.015):
+                        is_collision = True
+
+        # 2. Extreme Overlap (T-Bone / Merged boxes)
+        # If the boxes overlap by an extreme amount (>60%), the detector has fundamentally 
+        # confused their boundaries because they are occupying the same exact physical space.
+        if max_overlap > 0.60:
+            # Confirm it's not a passing hallucination by checking if they were approaching
+            if len(distance_history) >= 2 and distance_history[0] > distance_history[peak_idx]:
+                is_collision = True
 
     return is_collision, is_near_miss
