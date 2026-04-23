@@ -29,9 +29,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--output", default=None,
         help=(
             "Single mode : path to the output .json file\n"
-            "             (default: <video_stem>_analysis.json next to the input)\n"
+            "            (default: <video_stem>_analysis.json next to the input)\n"
             "Batch mode  : output folder for per-video .json files\n"
-            "             (default: <batch-input>/results/)"
+            "            (default: <batch-input>/results/)"
         ),
     )
     parser.add_argument("--interval", type=int, default=5,
@@ -42,8 +42,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Detection confidence threshold (default: 0.35).")
     parser.add_argument("--detector-model",  default="yolov8n.pt",
                         help="Ultralytics YOLO model file (default: yolov8n.pt).")
+    
+    # UPDATED: default is now "clrnet" instead of "heuristic"
     parser.add_argument("--lane-backend",    choices=["heuristic", "clrnet"],
-                        default="heuristic")
+                        default="clrnet")
+    
     parser.add_argument("--enable-vlm",      action="store_true",
                         help="Refine result with OpenAI VLM (requires OPENAI_API_KEY).")
     parser.add_argument("--max-vlm-frames",  type=int,   default=6,
