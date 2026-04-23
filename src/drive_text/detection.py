@@ -10,7 +10,6 @@ from ultralytics import YOLO
 from .schema import SpeedBucket
 from .config import AnalyzerConfig
 import math
-from .collision import depth_aware_collision_check
 
 COCO_CLASS_NAMES = {
     0: "person",
@@ -360,87 +359,87 @@ def dedupe(items: list[str]) -> list[str]:
     return output
 
 
-# def depth_aware_collision_check(
-#     track_a: TrackState, 
-#     track_b: TrackState, 
-#     frame_width: int, 
-#     frame_height: int,
-#     config: AnalyzerConfig,
-#     fps: float
-# ) -> tuple[bool, bool]:
-#     if not track_a.bboxes or not track_b.bboxes:
-#         return False, False
+def depth_aware_collision_check(
+    track_a: TrackState, 
+    track_b: TrackState, 
+    frame_width: int, 
+    frame_height: int,
+    config: AnalyzerConfig,
+    fps: float
+) -> tuple[bool, bool]:
+    if not track_a.bboxes or not track_b.bboxes:
+        return False, False
 
-#     dict_a = {pt[0]: bbox for pt, bbox in zip(track_a.points, track_a.bboxes)}
-#     dict_b = {pt[0]: bbox for pt, bbox in zip(track_b.points, track_b.bboxes)}
+    dict_a = {pt[0]: bbox for pt, bbox in zip(track_a.points, track_a.bboxes)}
+    dict_b = {pt[0]: bbox for pt, bbox in zip(track_b.points, track_b.bboxes)}
     
-#     common_frames = sorted(list(set(dict_a.keys()).intersection(set(dict_b.keys()))))
+    common_frames = sorted(list(set(dict_a.keys()).intersection(set(dict_b.keys()))))
     
-#     # Lowered requirement to 3 frames. Real crashes happen fast.
-#     if len(common_frames) < 3:
-#         return False, False
+    # Lowered requirement to 3 frames. Real crashes happen fast.
+    if len(common_frames) < 3:
+        return False, False
 
-#     # Horizon Filter: Ignore distant background traffic (Top 30% of screen)
-#     max_y_a = max(bbox[3] for bbox in dict_a.values())
-#     max_y_b = max(bbox[3] for bbox in dict_b.values())
-#     if max_y_a < frame_height * 0.30 and max_y_b < frame_height * 0.30:
-#         return False, False
+    # Horizon Filter: Ignore distant background traffic (Top 30% of screen)
+    max_y_a = max(bbox[3] for bbox in dict_a.values())
+    max_y_b = max(bbox[3] for bbox in dict_b.values())
+    if max_y_a < frame_height * 0.30 and max_y_b < frame_height * 0.30:
+        return False, False
 
-#     is_collision = False
-#     is_near_miss = False
+    is_collision = False
+    is_near_miss = False
 
-#     overlap_history = []
-#     distance_history = []
+    overlap_history = []
+    distance_history = []
 
-#     for i, frame_idx in enumerate(common_frames):
-#         box_a = dict_a[frame_idx]
-#         box_b = dict_b[frame_idx]
+    for i, frame_idx in enumerate(common_frames):
+        box_a = dict_a[frame_idx]
+        box_b = dict_b[frame_idx]
 
-#         overlap = iou(box_a, box_b)
-#         overlap_history.append(overlap)
+        overlap = iou(box_a, box_b)
+        overlap_history.append(overlap)
 
-#         cx_a = (box_a[0] + box_a[2]) / 2.0
-#         cx_b = (box_b[0] + box_b[2]) / 2.0
-#         by_a = box_a[3]
-#         by_b = box_b[3]
+        cx_a = (box_a[0] + box_a[2]) / 2.0
+        cx_b = (box_b[0] + box_b[2]) / 2.0
+        by_a = box_a[3]
+        by_b = box_b[3]
         
-#         dist = ((cx_a - cx_b)**2 + (by_a - by_b)**2)**0.5
-#         distance_history.append(dist)
+        dist = ((cx_a - cx_b)**2 + (by_a - by_b)**2)**0.5
+        distance_history.append(dist)
 
-#         # Mark near misses based on proximity and light overlap
-#         if overlap > 0.15: 
-#             if max(by_a, by_b) > frame_height * 0.40:
-#                 is_near_miss = True
+        # Mark near misses based on proximity and light overlap
+        if overlap > 0.15: 
+            if max(by_a, by_b) > frame_height * 0.40:
+                is_near_miss = True
 
-#     max_overlap = max(overlap_history) if overlap_history else 0.0
+    max_overlap = max(overlap_history) if overlap_history else 0.0
     
-#     if max_overlap > config.collision_iou_threshold:
-#         peak_idx = overlap_history.index(max_overlap)
+    if max_overlap > config.collision_iou_threshold:
+        peak_idx = overlap_history.index(max_overlap)
         
-#         # 1. High-Speed Impact & Tracking Death
-#         # If they hit hard and the track immediately ends (because cars deformed/merged)
-#         if peak_idx >= 1:
-#             pre_dist_change = distance_history[peak_idx - 1] - distance_history[peak_idx]
+        # 1. High-Speed Impact & Tracking Death
+        # If they hit hard and the track immediately ends (because cars deformed/merged)
+        if peak_idx >= 1:
+            pre_dist_change = distance_history[peak_idx - 1] - distance_history[peak_idx]
             
-#             # If they closed distance rapidly (>2% of screen width per frame) and overlapped heavily
-#             if pre_dist_change > (frame_width * 0.02) and max_overlap > 0.30:
-#                 # If the common tracking ends right at or immediately after the peak overlap
-#                 if peak_idx == len(common_frames) - 1 or peak_idx == len(common_frames) - 2:
-#                     is_collision = True
-#                     return is_collision, is_near_miss
+            # If they closed distance rapidly (>2% of screen width per frame) and overlapped heavily
+            if pre_dist_change > (frame_width * 0.02) and max_overlap > 0.30:
+                # If the common tracking ends right at or immediately after the peak overlap
+                if peak_idx == len(common_frames) - 1 or peak_idx == len(common_frames) - 2:
+                    is_collision = True
+                    return is_collision, is_near_miss
                     
-#                 # Or if they survive the impact but their relative speed drops to near zero (Tangled)
-#                 if len(distance_history) > peak_idx + 1:
-#                     post_dist_change = distance_history[peak_idx] - distance_history[-1]
-#                     if abs(post_dist_change) < (frame_width * 0.015):
-#                         is_collision = True
+                # Or if they survive the impact but their relative speed drops to near zero (Tangled)
+                if len(distance_history) > peak_idx + 1:
+                    post_dist_change = distance_history[peak_idx] - distance_history[-1]
+                    if abs(post_dist_change) < (frame_width * 0.015):
+                        is_collision = True
 
-#         # 2. Extreme Overlap (T-Bone / Merged boxes)
-#         # If the boxes overlap by an extreme amount (>60%), the detector has fundamentally 
-#         # confused their boundaries because they are occupying the same exact physical space.
-#         if max_overlap > 0.60:
-#             # Confirm it's not a passing hallucination by checking if they were approaching
-#             if len(distance_history) >= 2 and distance_history[0] > distance_history[peak_idx]:
-#                 is_collision = True
+        # 2. Extreme Overlap (T-Bone / Merged boxes)
+        # If the boxes overlap by an extreme amount (>60%), the detector has fundamentally 
+        # confused their boundaries because they are occupying the same exact physical space.
+        if max_overlap > 0.60:
+            # Confirm it's not a passing hallucination by checking if they were approaching
+            if len(distance_history) >= 2 and distance_history[0] > distance_history[peak_idx]:
+                is_collision = True
 
-#     return is_collision, is_near_miss
+    return is_collision, is_near_miss
